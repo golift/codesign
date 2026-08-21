@@ -1,0 +1,71 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+# Two small CGO-free binaries. signerd runs on the box with the YubiKey
+# (Linux/unRAID/Docker or a Mac); codesign runs on CI runners and laptops.
+# No Windows signerd on purpose, and these artifacts are NOT
+# Authenticode-signed in v1 (chicken and egg).
+builds:
+  - id: signerd
+    main: ./cmd/signerd
+    binary: signerd
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X "golift.io/version.Version={{.Version}}"
+      - -X "golift.io/version.BuildDate={{.Date}}"
+      - -X "golift.io/version.Revision={{.FullCommit}}"
+      - -X "golift.io/version.Branch={{.ShortCommit}} [{{.Branch}}]"
+  - id: codesign
+    main: ./cmd/codesign
+    binary: codesign
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X "golift.io/version.Version={{.Version}}"
+      - -X "golift.io/version.BuildDate={{.Date}}"
+      - -X "golift.io/version.Revision={{.FullCommit}}"
+      - -X "golift.io/version.Branch={{.ShortCommit}} [{{.Branch}}]"
+
+archives:
+  - id: signerd
+    ids: [signerd]
+    formats: ['tar.gz']
+    name_template: 'signerd-{{ .Version }}.{{ .Os }}.{{ .Arch }}'
+    files:
+      - src: LICENSE
+        dst: LICENSE.txt
+  - id: codesign
+    ids: [codesign]
+    formats: ['tar.gz']
+    name_template: 'codesign-{{ .Version }}.{{ .Os }}.{{ .Arch }}'
+    files:
+      - src: LICENSE
+        dst: LICENSE.txt
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
