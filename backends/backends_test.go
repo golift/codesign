@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -56,19 +57,24 @@ func TestOSSLSigncodeSign(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Len(t, runner.calls, 1)
+	got := runner.calls[0]
 	assert.Equal(t, []string{
 		"/usr/bin/osslsigncode", "sign",
 		"-pkcs11module", "/usr/lib/libykcs11.so",
 		"-certs", "/etc/signerd/chain.pem",
+		"-key", "pkcs11:id=%01",
 		"-h", "sha384",
 		"-ts", backends.DefaultTimestampURL,
-		"-key", "pkcs11:id=%01",
-		"-pass", "123456",
+	}, got[:12])
+	assert.Equal(t, "-readpass", got[12])
+	assert.True(t, strings.HasPrefix(filepath.Base(got[13]), "codesign-pin-"))
+	assert.Equal(t, []string{
 		"-n", "Request Name",
 		"-i", "https://request.example.com",
 		"-in", "/tmp/in.exe",
 		"-out", "/tmp/out.exe",
-	}, runner.calls[0])
+	}, got[14:])
+	assert.NotContains(t, got, "123456", "PIN must not appear in argv")
 }
 
 func TestOSSLSigncodeDefaults(t *testing.T) {
@@ -89,11 +95,12 @@ func TestOSSLSigncodeDefaults(t *testing.T) {
 		"osslsigncode", "sign",
 		"-pkcs11module", "/usr/lib/libykcs11.so",
 		"-certs", "/etc/signerd/chain.pem",
+		"-key", backends.DefaultKeyID,
 		"-h", "sha384",
 		"-ts", backends.DefaultTimestampURL,
 		"-in", "in.exe",
 		"-out", "out.exe",
-	}, runner.calls[0], "no -key, -pass, -n, or -i without configuration")
+	}, runner.calls[0], "default KeyID is PIV 9A; no PIN, name, or URL without configuration")
 }
 
 func TestOSSLSigncodeSignError(t *testing.T) {
@@ -116,29 +123,39 @@ func TestOSSLSigncodeHealth(t *testing.T) {
 		Run:          runner.run,
 	})
 	require.NoError(t, backend.Health(t.Context()))
-	require.Len(t, runner.calls, 1)
+	require.Len(t, runner.calls, 2)
+	assert.Equal(t, []string{"osslsigncode", "--version"}, runner.calls[0])
 	assert.Equal(t, []string{
 		"pkcs11-tool", "--module", "/usr/lib/libykcs11.so",
 		"--list-objects", "--type", "cert",
-	}, runner.calls[0])
+	}, runner.calls[1])
+
+	headingOnly := &fakeRunner{output: []byte("Available slots:\n")}
+	backend = backends.NewOSSLSigncode(&backends.OSSLConfig{
+		PKCS11Module: "/usr/lib/libykcs11.so",
+		Run:          headingOnly.run,
+	})
+	err := backend.Health(t.Context())
+	require.ErrorIs(t, err, backends.ErrNoToken)
 
 	empty := &fakeRunner{}
 	backend = backends.NewOSSLSigncode(&backends.OSSLConfig{
 		PKCS11Module: "/usr/lib/libykcs11.so",
 		Run:          empty.run,
 	})
-	err := backend.Health(t.Context())
+	err = backend.Health(t.Context())
 	require.ErrorIs(t, err, backends.ErrNoToken)
 
-	custom := &fakeRunner{output: []byte("slot 0: YubiKey PIV")}
+	custom := &fakeRunner{output: []byte("osslsigncode 2.9")}
 	backend = backends.NewOSSLSigncode(&backends.OSSLConfig{
 		Command:       "osc",
-		HealthCommand: []string{"pkcs11-tool", "--module", "/usr/lib/libykcs11.so", "--list-token-slots"},
+		HealthCommand: []string{"osc", "--version"},
 		Run:           custom.run,
 	})
 	require.NoError(t, backend.Health(t.Context()))
-	require.Len(t, custom.calls, 1)
-	assert.Equal(t, []string{"pkcs11-tool", "--module", "/usr/lib/libykcs11.so", "--list-token-slots"}, custom.calls[0])
+	require.Len(t, custom.calls, 2)
+	assert.Equal(t, []string{"osc", "--version"}, custom.calls[0])
+	assert.Equal(t, []string{"osc", "--version"}, custom.calls[1])
 }
 
 func TestSignRejectsContractViolations(t *testing.T) {
@@ -194,18 +211,20 @@ func TestJsignSign(t *testing.T) {
 	assert.Equal(t, "MZ unsigned", string(copied))
 
 	require.Len(t, runner.calls, 1)
-	assert.Equal(t, []string{
-		"/usr/bin/jsign",
-		"--storetype", "YUBIKEY",
-		"--certfile", "/etc/signerd/chain.pem",
-		"--alg", "SHA-384",
-		"--tsaurl", backends.DefaultTimestampURL,
-		"--alias", "X.509 Certificate for PIV Authentication",
-		"--storepass", "123456",
-		"--name", "My App",
-		"--url", "https://app.example.com",
-		output,
-	}, runner.calls[0])
+	assert.Equal(t, "/usr/bin/jsign", runner.calls[0][0])
+	assert.Contains(t, runner.calls[0], "--alias")
+	assert.NotContains(t, runner.calls[0], "123456", "PIN must not appear in argv")
+
+	passAt := -1
+
+	for i, arg := range runner.calls[0] {
+		if arg == "--storepass" {
+			passAt = i
+		}
+	}
+
+	require.Positive(t, passAt)
+	assert.True(t, strings.HasPrefix(runner.calls[0][passAt+1], "file:"))
 }
 
 func TestJsignSignMissingInput(t *testing.T) {
@@ -225,11 +244,18 @@ func TestJsignSignMissingInput(t *testing.T) {
 func TestJsignHealth(t *testing.T) {
 	t.Parallel()
 
-	runner := &fakeRunner{output: []byte("slot 0: YubiKey PIV")}
-	backend := backends.NewJsign(&backends.JsignConfig{Run: runner.run})
+	runner := &fakeRunner{output: []byte("Certificate Object; type = X.509 cert")}
+	backend := backends.NewJsign(&backends.JsignConfig{
+		PKCS11Module: "/usr/lib/libykcs11.so",
+		Run:          runner.run,
+	})
 	require.NoError(t, backend.Health(t.Context()))
-	require.Len(t, runner.calls, 1)
-	assert.Equal(t, []string{"pkcs11-tool", "--list-token-slots"}, runner.calls[0])
+	require.Len(t, runner.calls, 2)
+	assert.Equal(t, []string{"jsign", "--help"}, runner.calls[0])
+	assert.Equal(t, []string{
+		"pkcs11-tool", "--module", "/usr/lib/libykcs11.so",
+		"--list-objects", "--type", "cert",
+	}, runner.calls[1])
 }
 
 func TestExec(t *testing.T) {

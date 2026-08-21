@@ -3,6 +3,7 @@ package backends
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"golift.io/codesign/signer"
 )
@@ -19,7 +20,9 @@ type JsignConfig struct {
 	// CertFile is the PEM file holding the full code-signing certificate
 	// chain, so the signature carries the intermediates.
 	CertFile string
-	// PIN is the token user PIN, passed as --storepass. Never the PUK.
+	// PIN is the token user PIN. It is written to a 0600 temp file and
+	// passed as --storepass file:<path> so it never appears in process argv.
+	// Never the PUK.
 	PIN string
 	// TimestampURL defaults to DefaultTimestampURL.
 	TimestampURL string
@@ -102,35 +105,44 @@ func (s *Jsign) Sign(ctx context.Context, req *signer.Request) error {
 		"--tsaurl", s.config.TimestampURL,
 	}
 
-	if s.config.Alias != "" {
-		args = append(args, "--alias", s.config.Alias)
-	}
+	return withPINFile(s.config.PIN, func(pinPath string) error {
+		runArgs := slices.Clone(args)
 
-	if s.config.PIN != "" {
-		args = append(args, "--storepass", s.config.PIN)
-	}
+		if s.config.Alias != "" {
+			runArgs = append(runArgs, "--alias", s.config.Alias)
+		}
 
-	if name := fallback(req.Name, s.config.Name); name != "" {
-		args = append(args, "--name", name)
-	}
+		if pinPath != "" {
+			runArgs = append(runArgs, "--storepass", "file:"+pinPath)
+		}
 
-	if url := fallback(req.URL, s.config.URL); url != "" {
-		args = append(args, "--url", url)
-	}
+		if name := fallback(req.Name, s.config.Name); name != "" {
+			runArgs = append(runArgs, "--name", name)
+		}
 
-	args = append(args, req.OutputPath)
+		if url := fallback(req.URL, s.config.URL); url != "" {
+			runArgs = append(runArgs, "--url", url)
+		}
 
-	_, err = s.config.Run(ctx, s.config.Command, args...)
-	if err != nil {
-		return fmt.Errorf("jsign sign: %w", err)
-	}
+		runArgs = append(runArgs, req.OutputPath)
 
-	return nil
+		_, err := s.config.Run(ctx, s.config.Command, runArgs...)
+		if err != nil {
+			return fmt.Errorf("jsign sign: %w", err)
+		}
+
+		return nil
+	})
 }
 
-// Health runs the configured health-check command without a PIN.
+// Health proves the signing tool is runnable and the token is present.
 func (s *Jsign) Health(ctx context.Context) error {
-	err := runHealth(ctx, s.config.Run, s.config.HealthCommand)
+	_, err := s.config.Run(ctx, s.config.Command, "--help")
+	if err != nil {
+		return fmt.Errorf("jsign health: %w", err)
+	}
+
+	err = runHealth(ctx, s.config.Run, s.config.HealthCommand)
 	if err != nil {
 		return fmt.Errorf("jsign health: %w", err)
 	}

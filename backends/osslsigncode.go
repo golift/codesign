@@ -21,8 +21,8 @@ type OSSLConfig struct {
 	// KeyID optionally selects the token key, as a PKCS#11 URI or ID, when
 	// the module exposes more than one.
 	KeyID string
-	// PIN is the token user PIN, passed to osslsigncode as -pass. Never the
-	// PUK. Optional here so /health never needs it.
+	// PIN is the token user PIN. It is written to a 0600 temp file and
+	// passed as -readpass so it never appears in process argv. Never the PUK.
 	PIN string
 	// TimestampURL defaults to DefaultTimestampURL.
 	TimestampURL string
@@ -68,6 +68,10 @@ func NewOSSLSigncode(config *OSSLConfig) *OSSLSigncode {
 		backend.config.Digest = "sha384"
 	}
 
+	if backend.config.KeyID == "" {
+		backend.config.KeyID = DefaultKeyID
+	}
+
 	if len(backend.config.HealthCommand) == 0 {
 		backend.config.HealthCommand = defaultTokenHealth(backend.config.PKCS11Module)
 	}
@@ -86,43 +90,47 @@ func (s *OSSLSigncode) Sign(ctx context.Context, req *signer.Request) error {
 		return fmt.Errorf("osslsigncode sign: %w", err)
 	}
 
-	args := []string{
-		"sign",
-		"-pkcs11module", s.config.PKCS11Module,
-		"-certs", s.config.CertFile,
-		"-h", s.config.Digest,
-		"-ts", s.config.TimestampURL,
-	}
+	return withPINFile(s.config.PIN, func(pinPath string) error {
+		args := []string{
+			"sign",
+			"-pkcs11module", s.config.PKCS11Module,
+			"-certs", s.config.CertFile,
+			"-key", s.config.KeyID,
+			"-h", s.config.Digest,
+			"-ts", s.config.TimestampURL,
+		}
 
-	if s.config.KeyID != "" {
-		args = append(args, "-key", s.config.KeyID)
-	}
+		if pinPath != "" {
+			args = append(args, "-readpass", pinPath)
+		}
 
-	if s.config.PIN != "" {
-		args = append(args, "-pass", s.config.PIN)
-	}
+		if name := fallback(req.Name, s.config.Name); name != "" {
+			args = append(args, "-n", name)
+		}
 
-	if name := fallback(req.Name, s.config.Name); name != "" {
-		args = append(args, "-n", name)
-	}
+		if url := fallback(req.URL, s.config.URL); url != "" {
+			args = append(args, "-i", url)
+		}
 
-	if url := fallback(req.URL, s.config.URL); url != "" {
-		args = append(args, "-i", url)
-	}
+		args = append(args, "-in", req.InputPath, "-out", req.OutputPath)
 
-	args = append(args, "-in", req.InputPath, "-out", req.OutputPath)
+		_, err := s.config.Run(ctx, s.config.Command, args...)
+		if err != nil {
+			return fmt.Errorf("osslsigncode sign: %w", err)
+		}
 
-	_, err = s.config.Run(ctx, s.config.Command, args...)
-	if err != nil {
-		return fmt.Errorf("osslsigncode sign: %w", err)
-	}
-
-	return nil
+		return nil
+	})
 }
 
-// Health runs the configured health-check command without a PIN.
+// Health proves the signing tool is runnable and the token is present.
 func (s *OSSLSigncode) Health(ctx context.Context) error {
-	err := runHealth(ctx, s.config.Run, s.config.HealthCommand)
+	_, err := s.config.Run(ctx, s.config.Command, "--version")
+	if err != nil {
+		return fmt.Errorf("osslsigncode health: %w", err)
+	}
+
+	err = runHealth(ctx, s.config.Run, s.config.HealthCommand)
 	if err != nil {
 		return fmt.Errorf("osslsigncode health: %w", err)
 	}

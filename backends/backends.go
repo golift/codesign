@@ -30,6 +30,11 @@ const (
 	// LegacyTimestampURL is SSL.com's RSA timestamp authority, for tools
 	// that reject ECDSA-signed timestamps.
 	LegacyTimestampURL = "http://ts.ssl.com/legacy"
+	// DefaultKeyID is the PKCS#11 URI for PIV slot 9A (id %01), the
+	// conventional code-signing slot. osslsigncode requires -key even when
+	// the module exposes a single private key.
+	DefaultKeyID   = "pkcs11:id=%01"
+	certObjectMark = "Certificate Object"
 )
 
 // Runner executes one external command and returns its combined output.
@@ -89,9 +94,9 @@ func copyFile(source, destination string) error {
 	return nil
 }
 
-// runHealth runs the configured health command. Empty stdout is treated as
-// failure so a PIN-free token probe (pkcs11-tool --list-objects) cannot
-// report healthy when the key is absent.
+// runHealth runs the configured health command. Token probes that list
+// certificates must actually show a certificate object; a heading with no
+// token (or an unrelated token with no certs) is unhealthy.
 func runHealth(ctx context.Context, run Runner, command []string) error {
 	if len(command) == 0 {
 		return errNoHealthCommand
@@ -106,17 +111,72 @@ func runHealth(ctx context.Context, run Runner, command []string) error {
 		return ErrNoToken
 	}
 
+	if listsCertificates(command) && !bytes.Contains(output, []byte(certObjectMark)) {
+		return ErrNoToken
+	}
+
 	return nil
 }
 
-// defaultTokenHealth is a PIN-free PKCS#11 probe. When a module path is
-// known it lists certificates on that module; otherwise it lists token
-// slots via the system PKCS#11 search path. Both fail (nonzero or empty)
-// when no token is present.
-func defaultTokenHealth(module string) []string {
-	if module != "" {
-		return []string{"pkcs11-tool", "--module", module, "--list-objects", "--type", "cert"}
+func listsCertificates(command []string) bool {
+	hasList, hasCert := false, false
+
+	for i, arg := range command {
+		if arg == "--list-objects" {
+			hasList = true
+		}
+
+		if arg == "--type" && i+1 < len(command) && command[i+1] == "cert" {
+			hasCert = true
+		}
 	}
 
-	return []string{"pkcs11-tool", "--list-token-slots"}
+	return hasList && hasCert
+}
+
+// defaultTokenHealth is a PIN-free PKCS#11 certificate listing. A module
+// path is required: without one, pkcs11-tool --list-token-slots reports
+// "Available slots:" even when no YubiKey is present.
+func defaultTokenHealth(module string) []string {
+	if module == "" {
+		return nil
+	}
+
+	return []string{"pkcs11-tool", "--module", module, "--list-objects", "--type", "cert"}
+}
+
+// withPINFile writes the PIN to a 0600 temp file, calls fn with that path,
+// and removes the file. An empty PIN skips the file (fn receives "").
+func withPINFile(pin string, use func(path string) error) error {
+	if pin == "" {
+		return use("")
+	}
+
+	file, err := os.CreateTemp("", "codesign-pin-*")
+	if err != nil {
+		return fmt.Errorf("creating pin file: %w", err)
+	}
+
+	path := file.Name()
+	defer os.Remove(path)
+
+	_, err = file.WriteString(pin)
+	closeErr := file.Close()
+
+	if err != nil {
+		return fmt.Errorf("writing pin file: %w", err)
+	}
+
+	if closeErr != nil {
+		return fmt.Errorf("closing pin file: %w", closeErr)
+	}
+
+	const onlyOwner = 0o600
+
+	err = os.Chmod(path, onlyOwner)
+	if err != nil {
+		return fmt.Errorf("locking pin file: %w", err)
+	}
+
+	return use(path)
 }
