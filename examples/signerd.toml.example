@@ -21,7 +21,9 @@ max_body_mib = 100
 backend = "osslsigncode"
 
 # PKCS#11 module for the osslsigncode backend:
-#   Debian/Ubuntu: /usr/lib/x86_64-linux-gnu/libykcs11.so   (package ykcs11)
+#   Debian/Ubuntu: /usr/lib/<triplet>/libykcs11.so
+#     package ykcs11 (source: yubico-piv-tool). On amd64:
+#     /usr/lib/x86_64-linux-gnu/libykcs11.so
 #   macOS (brew):  /opt/homebrew/lib/libykcs11.dylib        (yubico-piv-tool)
 pkcs11_module = "/usr/lib/x86_64-linux-gnu/libykcs11.so"
 
@@ -45,13 +47,13 @@ cert_file = "/etc/signerd/chain.pem"
 #name = "My Application"
 #url = "https://app.example.com"
 
-# Health-check command run by GET /health (program + args). The default only
-# proves the signing tool is runnable; point it at something that touches the
-# token — never needing the PIN — so /health fails when the key is unplugged.
+# Health-check command run by GET /health (program + args). The default is a
+# PIN-free pkcs11-tool certificate listing against pkcs11_module; empty
+# output means the token is absent. Override to assert a specific slot.
 #health_command = [
 #  "pkcs11-tool",
 #  "--module", "/usr/lib/x86_64-linux-gnu/libykcs11.so",
-#  "--list-token-slots",
+#  "--list-objects", "--type", "cert",
 #]
 
 [github]

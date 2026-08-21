@@ -59,17 +59,17 @@ docker exec signerd osslsigncode --version
 curl -fsS http://127.0.0.1:8750/health   # from the host loopback publish
 ```
 
-By default `GET /health` only proves the signing tool is installed and
-runnable — it does **not** touch the token, so an unplugged YubiKey still
-returns 200. To make monitoring catch a missing key, set `health_command` in
-`signerd.toml` to something that talks to the token without a PIN (the image
-ships `pkcs11-tool` from opensc for this):
+By default `GET /health` runs a PIN-free `pkcs11-tool --list-objects --type cert`
+probe against `libykcs11.so`. Empty output or a nonzero exit is unhealthy
+(unplugged token, wrong module). That lists *certificates on the module*, not
+a specific PIV slot — override `health_command` if you need to assert slot 9A
+or a certificate label:
 
 ```toml
 health_command = [
   "pkcs11-tool",
   "--module", "/usr/lib/x86_64-linux-gnu/libykcs11.so",
-  "--list-token-slots",
+  "--list-objects", "--type", "cert",
 ]
 ```
 

@@ -53,4 +53,4 @@ networks:
 
 secrets:
   signerd_pin:
-    file: ./secrets/signerd_pin.txt # one line, the PIV user PIN. chmod 0600.
+    file: ./secrets/signerd_pin.txt # gitignored; one line, PIV user PIN. chmod 0600.

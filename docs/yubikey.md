@@ -44,8 +44,9 @@ unattended server signing possible. If your signing slot requires touch, a
 headless daemon cannot use it; you would need to re-import or re-issue with a
 different policy (talk to your CA before touching an attested slot).
 
-## Digest must match the key type
+## Digest defaults
 
-An ECC P-384 signing key needs ECDSA Authenticode with SHA-384 digests; that
-is the daemon's default (`sha384` for osslsigncode, `SHA-384` for jsign). RSA
-keys usually want SHA-256 — set `digest` in the config.
+The daemon defaults to SHA-384 (`sha384` / `SHA-384`) because that is a
+strong match for an ECC P-384 signing key. ECDSA can sign SHA-256 digests
+too; pick the digest your verifiers accept. RSA keys usually want SHA-256
+— set `digest` in the config.

@@ -4,7 +4,8 @@
 # /etc/systemd/system/signerd.service.
 #
 # The host needs pcscd + libccid running (the token's PC/SC stack) and the
-# ykcs11 package for the PKCS#11 module.
+# PKCS#11 module: Debian/Ubuntu package ykcs11 (from source yubico-piv-tool),
+# which installs /usr/lib/<triplet>/libykcs11.so.
 
 [Unit]
 Description=Remote Authenticode signing daemon (golift.io/codesign)

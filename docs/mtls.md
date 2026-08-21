@@ -56,5 +56,9 @@ gh secret set CODESIGN_CLIENT_CERT -o your-org < client-new.crt
 gh secret set CODESIGN_CLIENT_KEY  -o your-org < client-new.key
 ```
 
-Nothing on the server changes during client rotation — nginx trusts the CA,
-not the individual certificate.
+Nothing on the server changes during *client* rotation — nginx trusts the
+CA, not the individual certificate. **Revoking** the old cert does not take
+effect unless nginx is configured to check a CRL or OCSP (`ssl_crl`, or a
+short-lived cert you simply let expire). This example does not ship a CRL;
+prefer a lifetime short enough that expiry is the revocation story, or add
+`ssl_crl` and reload nginx when you rotate.

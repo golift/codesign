@@ -53,7 +53,9 @@ Options:
 
 - Do not point `CODESIGN_URL` at the public hostname from a laptop and then
   "fix" the 401 by weakening the server. The 401 is the design working.
-- Do not publish signerd on `0.0.0.0` (LAN or internet). Combined with the
-  loopback skip that is a total bypass of both gates.
+- Do not publish signerd on `0.0.0.0` (LAN or internet). That removes the
+  nginx mTLS gate for anyone who can reach the port. Non-loopback clients
+  still need a valid OIDC token; loopback clients still skip OIDC. The
+  failure mode is "mTLS gone, OIDC only", not a total bypass.
 - Do not expect the laptop to reach the key with PKCS#11: the token is
   physically in the server; only signerd touches it.

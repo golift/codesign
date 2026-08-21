@@ -9,14 +9,29 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -ldflags "-s -w" -o /out/signerd ./cmd/signerd \
-    && CGO_ENABLED=0 go build -ldflags "-s -w" -o /out/codesign ./cmd/codesign
+ARG VERSION=development
+ARG REVISION
+ARG BUILDDATE
+ARG BRANCH
+RUN CGO_ENABLED=0 go build -ldflags "-s -w \
+        -X golift.io/version.Version=${VERSION} \
+        -X golift.io/version.Revision=${REVISION} \
+        -X golift.io/version.BuildDate=${BUILDDATE} \
+        -X golift.io/version.Branch=${BRANCH}" \
+        -o /out/signerd ./cmd/signerd \
+    && CGO_ENABLED=0 go build -ldflags "-s -w \
+        -X golift.io/version.Version=${VERSION} \
+        -X golift.io/version.Revision=${REVISION} \
+        -X golift.io/version.BuildDate=${BUILDDATE} \
+        -X golift.io/version.Branch=${BRANCH}" \
+        -o /out/codesign ./cmd/codesign
 
 FROM debian:bookworm-slim
 
-# pcscd + libccid reach the token; ykcs11 provides the PKCS#11 module;
-# osslsigncode is the default signing backend; opensc supplies pkcs11-tool
-# for token-touching health checks (see health_command in signerd.toml).
+# pcscd + libccid reach the token; the ykcs11 binary package (source:
+# yubico-piv-tool, https://packages.debian.org/bookworm/ykcs11) provides
+# libykcs11.so; osslsigncode is the default signing backend; opensc supplies
+# pkcs11-tool for the default PIN-free health probe.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         libccid \

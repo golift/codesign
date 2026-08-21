@@ -12,3 +12,4 @@
 /signerd
 /dist/
 signerd.toml
+/secrets/

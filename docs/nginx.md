@@ -10,8 +10,10 @@ with your own ssl/proxy boilerplate.
 1. Copy `nginx/sign.conf` to your site-confs directory as `codesign.conf`
    (SWAG: `/config/nginx/site-confs/`).
 2. Put your client CA at `/config/keys/client-ca.crt` (see mtls.md).
-3. Define the upstream in your gitignored variables file rather than editing
-   the site conf:
+3. The example sets `$codesign` **inline** to the Docker-network hostname.
+   Edit that one line in `sign.conf` for your deploy. If you prefer a
+   gitignored variables file, delete the inline `set` (a later `set` wins,
+   so leaving both is confusing):
 
    ```nginx
    set $codesign http://signerd:8750;
