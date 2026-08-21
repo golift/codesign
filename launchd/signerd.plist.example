@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  golift/codesign launchd job for macOS operators who keep the YubiKey on a
+  Mac. Install as ~/Library/LaunchAgents/io.golift.signerd.plist (LaunchAgent,
+  not LaunchDaemon: the token and the PKCS#11 module live in the user
+  session), edit the paths, then:
+
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/io.golift.signerd.plist
+
+  Config goes in ~/Library/Application Support/signerd/signerd.toml with
+  pkcs11_module = "/opt/homebrew/lib/libykcs11.dylib" (brew yubico-piv-tool).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.golift.signerd</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/signerd</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/signerd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/signerd.log</string>
+
+    <!-- Alternative to a pin_file: uncomment and set the PIN here, then
+         chmod 0600 this plist. Prefer the pin_file. -->
+    <!--
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>SIGNERD_PIN</key>
+        <string>change-me</string>
+    </dict>
+    -->
+</dict>
+</plist>

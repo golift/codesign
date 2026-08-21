@@ -1,0 +1,41 @@
+# golift/codesign systemd unit, for Linux hosts that run signerd without
+# Docker. Install signerd to /usr/local/bin, the config to
+# /etc/signerd/signerd.toml, and this file to
+# /etc/systemd/system/signerd.service.
+#
+# The host needs pcscd + libccid running (the token's PC/SC stack) and the
+# ykcs11 package for the PKCS#11 module.
+
+[Unit]
+Description=Remote Authenticode signing daemon (golift.io/codesign)
+Documentation=https://github.com/golift/codesign
+After=network-online.target pcscd.service
+Wants=network-online.target
+Requires=pcscd.service
+
+[Service]
+Type=simple
+# Run as an unprivileged user that is allowed to talk to pcscd.
+User=signerd
+Group=signerd
+ExecStart=/usr/local/bin/signerd --config /etc/signerd/signerd.toml
+
+# PIN options, pick one (never the PUK):
+#   1. pin_file in signerd.toml pointing at a root:signerd 0640 file.
+#   2. An EnvironmentFile with SIGNERD_PIN=..., chmod 0600:
+#EnvironmentFile=/etc/signerd/env
+
+Restart=on-failure
+RestartSec=5
+
+# Hardening. signerd only needs its config, temp space, and pcscd's socket.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

@@ -54,6 +54,23 @@ must add your `Owner/repo` to the daemon's `allowed_repositories` list, and
 your client certificate must chain to the CA that the operator's proxy
 verifies. See `docs/` for the server side.
 
+## Deploying the daemon
+
+Start with [examples/signerd.toml.example](examples/signerd.toml.example),
+then pick a deployment:
+
+-   **Docker** (recommended on unRAID): [Dockerfile](Dockerfile) +
+    [docker-compose.yml.example](docker-compose.yml.example), with USB
+    passthrough notes in [docs/docker-usb.md](docs/docker-usb.md).
+-   **systemd**: [systemd/signerd.service.example](systemd/signerd.service.example).
+-   **launchd** (macOS): [launchd/signerd.plist.example](launchd/signerd.plist.example).
+
+Front it with nginx mTLS ([nginx/sign.conf](nginx/sign.conf),
+[docs/nginx.md](docs/nginx.md), [docs/mtls.md](docs/mtls.md)), configure the
+OIDC allowlist ([docs/github-oidc.md](docs/github-oidc.md)), and read
+[docs/yubikey.md](docs/yubikey.md) for token facts. Operators signing local
+builds over SSH: [docs/local-signing.md](docs/local-signing.md).
+
 ## Status
 
 Under construction; a `v1.0.0` release plants the floating `v1` tag.
