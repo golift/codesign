@@ -52,6 +52,20 @@ func TestFakeSignError(t *testing.T) {
 	assert.Len(t, fake.Requests(), 1, "failed requests are still recorded")
 }
 
+func TestFakeSignContractViolations(t *testing.T) {
+	t.Parallel()
+
+	fake := &signer.Fake{}
+
+	err := fake.Sign(t.Context(), nil)
+	require.ErrorIs(t, err, signer.ErrNilRequest)
+
+	err = fake.Sign(t.Context(), &signer.Request{InputPath: "same.exe", OutputPath: "same.exe"})
+	require.ErrorIs(t, err, signer.ErrSamePath)
+
+	assert.Empty(t, fake.Requests(), "contract violations are rejected before recording")
+}
+
 func TestFakeSignMissingInput(t *testing.T) {
 	t.Parallel()
 

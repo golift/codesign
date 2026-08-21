@@ -2,9 +2,19 @@ package signer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
+)
+
+// Errors returned by Fake when a caller violates the Signer contract.
+var (
+	// ErrNilRequest is returned when Sign receives a nil request.
+	ErrNilRequest = errors.New("nil sign request")
+	// ErrSamePath is returned when a request uses one path for both input
+	// and output; the Signer contract forbids in-place signing.
+	ErrSamePath = errors.New("input and output paths may not be the same file")
 )
 
 // FakeMarker is appended to the output file by Fake.Sign so tests can verify
@@ -26,8 +36,17 @@ type Fake struct {
 }
 
 // Sign records the request, then copies the input file to the output path
-// with FakeMarker appended.
+// with FakeMarker appended. It enforces the Signer contract so tests catch
+// callers that pass a nil request or sign in place.
 func (f *Fake) Sign(_ context.Context, req *Request) error {
+	if req == nil {
+		return ErrNilRequest
+	}
+
+	if req.InputPath == req.OutputPath {
+		return fmt.Errorf("%w: %s", ErrSamePath, req.InputPath)
+	}
+
 	f.mu.Lock()
 	f.requests = append(f.requests, *req)
 	err := f.SignErr
