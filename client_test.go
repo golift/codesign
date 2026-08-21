@@ -126,6 +126,22 @@ func TestSignFilePreservesMode(t *testing.T) {
 	assert.Equal(t, os.FileMode(0o755), info.Mode().Perm(), "executable bit must survive in-place signing")
 }
 
+func TestNewRejectsPlaintextRemoteURL(t *testing.T) {
+	t.Parallel()
+
+	_, err := codesign.New(&codesign.Config{URL: "http://sign.example.com", Token: "jwt"})
+	require.ErrorIs(t, err, codesign.ErrInsecureURL)
+
+	_, err = codesign.New(&codesign.Config{URL: "https://sign.example.com"})
+	require.NoError(t, err)
+
+	_, err = codesign.New(&codesign.Config{URL: "http://127.0.0.1:8750"})
+	require.NoError(t, err)
+
+	_, err = codesign.New(&codesign.Config{URL: "http://localhost:8750"})
+	require.NoError(t, err)
+}
+
 func TestNewRejectsHalfKeyPair(t *testing.T) {
 	t.Parallel()
 
@@ -284,6 +300,19 @@ func TestFetchGitHubToken(t *testing.T) {
 	token, err := codesign.FetchGitHubToken(t.Context(), "https://sign.example.com")
 	require.NoError(t, err)
 	assert.Equal(t, "the-oidc-jwt", token)
+}
+
+func TestFetchGitHubTokenEmptyValue(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(resp http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(resp).Encode(map[string]string{"value": ""})
+	}))
+	t.Cleanup(server.Close)
+
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", server.URL+"/?api-version=2")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "runtime-token")
+
+	_, err := codesign.FetchGitHubToken(t.Context(), "https://sign.example.com")
+	require.ErrorIs(t, err, codesign.ErrEmptyOIDC)
 }
 
 func TestFetchGitHubTokenOutsideActions(t *testing.T) {

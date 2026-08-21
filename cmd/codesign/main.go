@@ -121,6 +121,10 @@ func run() error {
 func buildClient(ctx context.Context, opts *flags, needToken bool) (*codesign.Client, error) {
 	token := opts.token
 	if needToken && token == "" && os.Getenv("ACTIONS_ID_TOKEN_REQUEST_URL") != "" {
+		if opts.url == "" {
+			return nil, codesign.ErrNoURL
+		}
+
 		var err error
 
 		token, err = codesign.FetchGitHubToken(ctx, opts.url)

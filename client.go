@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -28,7 +29,9 @@ const (
 // Errors returned by the client.
 var (
 	ErrNoURL         = errors.New("no signing service URL configured")
+	ErrInsecureURL   = errors.New("signing service URL must be https (or http to loopback)")
 	ErrHalfKeyPair   = errors.New("client certificate and key must both be set (or neither)")
+	ErrEmptyOIDC     = errors.New("GitHub Actions OIDC response contained no token")
 	ErrNoActionsOIDC = errors.New("not running under GitHub Actions with id-token permission " +
 		"(ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN are unset)")
 	errSignFailed = errors.New("signing service error")
@@ -81,6 +84,15 @@ func New(config *Config) (*Client, error) {
 	client := &Client{config: *config}
 	client.config.URL = strings.TrimSuffix(client.config.URL, "/")
 
+	parsed, err := url.Parse(client.config.URL)
+	if err != nil {
+		return nil, fmt.Errorf("parsing signing service URL: %w", err)
+	}
+
+	if !secureURL(parsed) {
+		return nil, fmt.Errorf("%w: %s", ErrInsecureURL, client.config.URL)
+	}
+
 	if client.config.Timeout == 0 {
 		client.config.Timeout = DefaultTimeout
 	}
@@ -96,9 +108,19 @@ func New(config *Config) (*Client, error) {
 		return nil, err
 	}
 
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return nil, errNoDefaultTransport
+	}
+
+	cloned := transport.Clone()
+	if tlsConfig != nil {
+		cloned.TLSClientConfig = tlsConfig
+	}
+
 	client.web = &http.Client{
 		Timeout:   client.config.Timeout,
-		Transport: &http.Transport{TLSClientConfig: tlsConfig},
+		Transport: cloned,
 	}
 
 	return client, nil
@@ -335,7 +357,34 @@ func FetchGitHubToken(ctx context.Context, audience string) (string, error) {
 		return "", fmt.Errorf("decoding OIDC token: %w", err)
 	}
 
+	if token.Value == "" {
+		return "", ErrEmptyOIDC
+	}
+
 	return token.Value, nil
+}
+
+// secureURL reports whether the signing endpoint will not send the OIDC
+// token or artifact in plaintext over a non-loopback network.
+func secureURL(parsed *url.URL) bool {
+	switch strings.ToLower(parsed.Scheme) {
+	case "https":
+		return parsed.Host != ""
+	case "http":
+		return isLoopbackHost(parsed.Hostname())
+	default:
+		return false
+	}
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+
+	addr := net.ParseIP(host)
+
+	return addr != nil && addr.IsLoopback()
 }
 
 // isPermanentTransportError reports whether a transport failure cannot be
@@ -422,7 +471,10 @@ func loadKeyPair(certValue, keyValue string) (tls.Certificate, error) {
 }
 
 // errNoCertsInPEM means the root CA PEM contained no usable certificates.
-var errNoCertsInPEM = errors.New("no certificates found in PEM")
+var (
+	errNoCertsInPEM       = errors.New("no certificates found in PEM")
+	errNoDefaultTransport = errors.New("http.DefaultTransport is not an *http.Transport")
+)
 
 // loadPEM accepts inline PEM (contains "-----BEGIN") or a file path.
 func loadPEM(value string) ([]byte, error) {
