@@ -47,7 +47,8 @@ type Config struct {
 	PKCS11Module string `toml:"pkcs11_module" xml:"pkcs11_module"`
 	// CertFile is the PEM certificate chain for the signing key.
 	CertFile string `toml:"cert_file" xml:"cert_file"`
-	// KeyID optionally selects the token key (osslsigncode -key).
+	// KeyID is the osslsigncode -key value. Empty defaults to PIV slot 9A
+	// (pkcs11:id=%01). osslsigncode requires -key even with a single token key.
 	KeyID string `toml:"key_id" xml:"key_id"`
 	// Alias selects the certificate for the jsign backend.
 	Alias string `toml:"alias" xml:"alias"`
