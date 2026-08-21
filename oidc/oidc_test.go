@@ -277,6 +277,47 @@ func TestVerifyUnknownKeyIDRateLimited(t *testing.T) {
 	assert.Equal(t, int32(1), fake.jwksHits.Load())
 }
 
+func TestVerifyRejectsJWKSOnOtherHost(t *testing.T) {
+	t.Parallel()
+
+	evil := httptest.NewServer(http.HandlerFunc(func(resp http.ResponseWriter, _ *http.Request) {
+		t.Error("JWKS fetch must not follow a foreign jwks_uri")
+		http.Error(resp, "nope", http.StatusTeapot)
+	}))
+	t.Cleanup(evil.Close)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(resp http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(resp).Encode(map[string]string{"jwks_uri": evil.URL + "/jwks"})
+	})
+
+	issuer := httptest.NewServer(mux)
+	t.Cleanup(issuer.Close)
+
+	verifier := oidc.New(&oidc.Config{
+		Issuer:              issuer.URL,
+		Audience:            testAudience,
+		AllowedRepositories: []string{testRepo},
+	})
+
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+		"iss":        issuer.URL,
+		"aud":        testAudience,
+		"exp":        time.Now().Add(time.Hour).Unix(),
+		"repository": testRepo,
+	})
+	token.Header["kid"] = testKeyID
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	signed, err := token.SignedString(key)
+	require.NoError(t, err)
+
+	_, err = verifier.Verify(t.Context(), signed)
+	require.ErrorIs(t, err, oidc.ErrJWKSHost)
+}
+
 func TestNewDefaults(t *testing.T) {
 	t.Parallel()
 
