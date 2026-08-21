@@ -3,9 +3,11 @@
 // the golift/codesign GitHub Action runs, and what operators run over an SSH
 // tunnel.
 //
-// Every flag falls back to a CODESIGN_* environment variable, so CI needs no
-// argument plumbing: CODESIGN_URL, CODESIGN_CLIENT_CERT, CODESIGN_CLIENT_KEY,
-// CODESIGN_CA_CERT, CODESIGN_TOKEN, CODESIGN_NAME, CODESIGN_WEBSITE.
+// The connection and signing flags fall back to CODESIGN_* environment
+// variables, so CI needs no argument plumbing: CODESIGN_URL,
+// CODESIGN_CLIENT_CERT, CODESIGN_CLIENT_KEY, CODESIGN_CA_CERT,
+// CODESIGN_TOKEN, CODESIGN_NAME, CODESIGN_WEBSITE. The remaining flags
+// (-output, -retries, -timeout, -health) are command-line only.
 //
 // When run inside GitHub Actions without an explicit token, it requests an
 // OIDC token from the Actions runtime using the service URL as the audience.
@@ -18,6 +20,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"golift.io/codesign"
@@ -73,6 +76,11 @@ func parseFlags() *flags {
 	flag.BoolVar(&opts.version, "version", false, "print the version and exit")
 	flag.Parse()
 
+	// Normalize once so the OIDC audience and the client URL are the same
+	// string; a trailing slash would otherwise make the daemon reject the
+	// token's audience.
+	opts.url = strings.TrimSuffix(opts.url, "/")
+
 	return opts
 }
 
@@ -87,7 +95,7 @@ func run() error {
 
 	ctx := context.Background()
 
-	client, err := buildClient(ctx, opts)
+	client, err := buildClient(ctx, opts, !opts.health)
 	if err != nil {
 		return err
 	}
@@ -107,10 +115,12 @@ func run() error {
 }
 
 // buildClient assembles the client, fetching a GitHub Actions OIDC token
-// when none was provided and the Actions runtime is available.
-func buildClient(ctx context.Context, opts *flags) (*codesign.Client, error) {
+// when one is needed, none was provided, and the Actions runtime is
+// available. Health checks never need a token (/health is unauthenticated),
+// so they must not require id-token permissions.
+func buildClient(ctx context.Context, opts *flags, needToken bool) (*codesign.Client, error) {
 	token := opts.token
-	if token == "" && os.Getenv("ACTIONS_ID_TOKEN_REQUEST_URL") != "" {
+	if needToken && token == "" && os.Getenv("ACTIONS_ID_TOKEN_REQUEST_URL") != "" {
 		var err error
 
 		token, err = codesign.FetchGitHubToken(ctx, opts.url)

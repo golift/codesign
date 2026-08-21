@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -98,6 +99,57 @@ func TestSignFileSeparateOutput(t *testing.T) {
 	signed, err := os.ReadFile(output)
 	require.NoError(t, err)
 	assert.Equal(t, "signed bytes", string(signed))
+}
+
+func TestSignFilePreservesMode(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no Unix permission bits to preserve")
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(resp http.ResponseWriter, _ *http.Request) {
+		_, _ = resp.Write([]byte("signed"))
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := codesign.New(&codesign.Config{URL: server.URL})
+	require.NoError(t, err)
+
+	input := filepath.Join(t.TempDir(), "app.exe")
+	require.NoError(t, os.WriteFile(input, []byte("MZ binary"), 0o755)) //nolint:gosec // The exec bit is the point.
+
+	require.NoError(t, client.SignFile(t.Context(), input, "", nil))
+
+	info, err := os.Stat(input)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o755), info.Mode().Perm(), "executable bit must survive in-place signing")
+}
+
+func TestNewRejectsHalfKeyPair(t *testing.T) {
+	t.Parallel()
+
+	_, err := codesign.New(&codesign.Config{URL: "http://127.0.0.1:1", ClientKey: "key.pem"})
+	require.ErrorIs(t, err, codesign.ErrHalfKeyPair)
+
+	_, err = codesign.New(&codesign.Config{URL: "http://127.0.0.1:1", ClientCert: "cert.pem"})
+	require.ErrorIs(t, err, codesign.ErrHalfKeyPair)
+}
+
+func TestSignNegativeRetriesStillSigns(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(resp http.ResponseWriter, _ *http.Request) {
+		_, _ = resp.Write([]byte("signed"))
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := codesign.New(&codesign.Config{URL: server.URL, Retries: -5})
+	require.NoError(t, err)
+
+	signed, err := client.Sign(t.Context(), "app.exe", []byte("MZ"), nil)
+	require.NoError(t, err)
+	assert.Equal(t, "signed", string(signed), "negative retries must not skip the request loop")
 }
 
 func TestSignRetriesGatewayErrors(t *testing.T) {

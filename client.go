@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -27,6 +28,7 @@ const (
 // Errors returned by the client.
 var (
 	ErrNoURL         = errors.New("no signing service URL configured")
+	ErrHalfKeyPair   = errors.New("client certificate and key must both be set (or neither)")
 	ErrNoActionsOIDC = errors.New("not running under GitHub Actions with id-token permission " +
 		"(ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN are unset)")
 	errSignFailed = errors.New("signing service error")
@@ -81,6 +83,12 @@ func New(config *Config) (*Client, error) {
 
 	if client.config.Timeout == 0 {
 		client.config.Timeout = DefaultTimeout
+	}
+
+	// A negative retry count would skip the request loop entirely and
+	// "succeed" with no data.
+	if client.config.Retries < 0 {
+		client.config.Retries = 0
 	}
 
 	tlsConfig, err := buildTLS(&client.config)
@@ -170,6 +178,13 @@ func (c *Client) SignFile(ctx context.Context, inputPath, outputPath string, opt
 		return err
 	}
 
+	return writeAtomic(signed, inputPath, outputPath)
+}
+
+// writeAtomic writes the signed bytes next to the output path and renames
+// them into place, preserving the mode of the file being replaced (or of the
+// input) so an executable stays executable.
+func writeAtomic(signed []byte, inputPath, outputPath string) error {
 	temp, err := os.CreateTemp(filepath.Dir(outputPath), filepath.Base(outputPath)+".signing-*")
 	if err != nil {
 		return fmt.Errorf("creating temp file: %w", err)
@@ -183,7 +198,21 @@ func (c *Client) SignFile(ctx context.Context, inputPath, outputPath string, opt
 		return fmt.Errorf("writing signed file: %w", err)
 	}
 
-	_ = temp.Close()
+	// A close error can mean the filesystem never flushed the data; do not
+	// publish a possibly-incomplete artifact.
+	err = temp.Close()
+	if err != nil {
+		_ = os.Remove(temp.Name())
+
+		return fmt.Errorf("closing signed file: %w", err)
+	}
+
+	err = os.Chmod(temp.Name(), outputMode(inputPath, outputPath))
+	if err != nil {
+		_ = os.Remove(temp.Name())
+
+		return fmt.Errorf("setting output permissions: %w", err)
+	}
 
 	err = os.Rename(temp.Name(), outputPath)
 	if err != nil {
@@ -193,6 +222,23 @@ func (c *Client) SignFile(ctx context.Context, inputPath, outputPath string, opt
 	}
 
 	return nil
+}
+
+// outputMode picks the permission bits for the signed file: the mode of the
+// file being replaced, falling back to the input file's, then owner-only.
+func outputMode(inputPath, outputPath string) fs.FileMode {
+	const onlyOwner fs.FileMode = 0o600
+
+	info, err := os.Stat(outputPath)
+	if err != nil {
+		info, err = os.Stat(inputPath)
+	}
+
+	if err != nil {
+		return onlyOwner
+	}
+
+	return info.Mode().Perm()
 }
 
 // signOnce performs one POST /v1/sign attempt. The second return value says
@@ -225,7 +271,9 @@ func (c *Client) signOnce(
 
 	resp, err := c.web.Do(req)
 	if err != nil {
-		return nil, true, fmt.Errorf("posting file: %w", err)
+		// TLS and certificate problems are configuration, not weather;
+		// retrying them just delays the real error.
+		return nil, !isPermanentTransportError(err), fmt.Errorf("posting file: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -290,9 +338,36 @@ func FetchGitHubToken(ctx context.Context, audience string) (string, error) {
 	return token.Value, nil
 }
 
+// isPermanentTransportError reports whether a transport failure cannot be
+// fixed by retrying: TLS handshake rejections and certificate verification
+// failures, as opposed to transient network weather.
+func isPermanentTransportError(err error) bool {
+	var (
+		verifyErr   *tls.CertificateVerificationError
+		recordErr   tls.RecordHeaderError
+		alertErr    tls.AlertError
+		unknownCA   x509.UnknownAuthorityError
+		hostnameErr x509.HostnameError
+		certErr     x509.CertificateInvalidError
+	)
+
+	return errors.As(err, &verifyErr) ||
+		errors.As(err, &recordErr) ||
+		errors.As(err, &alertErr) ||
+		errors.As(err, &unknownCA) ||
+		errors.As(err, &hostnameErr) ||
+		errors.As(err, &certErr)
+}
+
 // buildTLS assembles the client TLS configuration from the mTLS settings.
 // It returns nil when neither a client certificate nor a root CA is set.
 func buildTLS(config *Config) (*tls.Config, error) {
+	// Half an mTLS pair is a configuration mistake; ignoring it silently
+	// would present no certificate while the caller believes mTLS is on.
+	if (config.ClientKey == "") != (config.ClientCert == "") {
+		return nil, ErrHalfKeyPair
+	}
+
 	if config.ClientCert == "" && config.RootCA == "" {
 		return nil, nil //nolint:nilnil // nil TLS config selects http defaults.
 	}
@@ -300,19 +375,9 @@ func buildTLS(config *Config) (*tls.Config, error) {
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
 
 	if config.ClientCert != "" {
-		certPEM, err := loadPEM(config.ClientCert)
+		cert, err := loadKeyPair(config.ClientCert, config.ClientKey)
 		if err != nil {
-			return nil, fmt.Errorf("loading client certificate: %w", err)
-		}
-
-		keyPEM, err := loadPEM(config.ClientKey)
-		if err != nil {
-			return nil, fmt.Errorf("loading client key: %w", err)
-		}
-
-		cert, err := tls.X509KeyPair(certPEM, keyPEM)
-		if err != nil {
-			return nil, fmt.Errorf("parsing client certificate: %w", err)
+			return nil, err
 		}
 
 		tlsConfig.Certificates = []tls.Certificate{cert}
@@ -333,6 +398,27 @@ func buildTLS(config *Config) (*tls.Config, error) {
 	}
 
 	return tlsConfig, nil
+}
+
+// loadKeyPair loads the mTLS client certificate and key, each from a file
+// path or inline PEM.
+func loadKeyPair(certValue, keyValue string) (tls.Certificate, error) {
+	certPEM, err := loadPEM(certValue)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("loading client certificate: %w", err)
+	}
+
+	keyPEM, err := loadPEM(keyValue)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("loading client key: %w", err)
+	}
+
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("parsing client certificate: %w", err)
+	}
+
+	return cert, nil
 }
 
 // errNoCertsInPEM means the root CA PEM contained no usable certificates.
