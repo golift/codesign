@@ -68,8 +68,9 @@ runs:
         CODESIGN_NAME: ${{ inputs.name }}
         CODESIGN_WEBSITE: ${{ inputs.website }}
         CODESIGN_FILES: ${{ inputs.files }}
-      # The variable is unquoted on purpose: it splits the file list and
+      # $CODESIGN_FILES is unquoted on purpose: it splits the file list and
       # expands globs. Values pass through the environment, not through
       # template interpolation, so there is no shell injection surface.
-      # shellcheck disable=SC2086
-      run: '"$(go env GOPATH)/bin/codesign" $CODESIGN_FILES'
+      run: |
+        # shellcheck disable=SC2086
+        "$(go env GOPATH)/bin/codesign" $CODESIGN_FILES
