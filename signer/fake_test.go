@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -44,7 +45,9 @@ func TestFakeSignError(t *testing.T) {
 	t.Parallel()
 
 	errBroken := errors.New("token unplugged")
-	fake := &signer.Fake{SignErr: errBroken}
+	fake := &signer.Fake{}
+	fake.SetSignErr(errBroken)
+
 	req := &signer.Request{InputPath: "in", OutputPath: "out"}
 
 	err := fake.Sign(t.Context(), req)
@@ -66,6 +69,45 @@ func TestFakeSignContractViolations(t *testing.T) {
 	assert.Empty(t, fake.Requests(), "contract violations are rejected before recording")
 }
 
+func TestFakeSignSameFileAlias(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	input := filepath.Join(dir, "app.exe")
+	require.NoError(t, os.WriteFile(input, []byte("MZ"), 0o600))
+
+	alias := filepath.Join(dir, "alias.exe")
+
+	err := os.Link(input, alias)
+	if err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+
+	fake := &signer.Fake{}
+	err = fake.Sign(t.Context(), &signer.Request{InputPath: input, OutputPath: alias})
+	require.ErrorIs(t, err, signer.ErrSamePath)
+	assert.Empty(t, fake.Requests())
+}
+
+func TestFakeSignSymlinkAlias(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation is privileged on Windows")
+	}
+
+	dir := t.TempDir()
+	input := filepath.Join(dir, "app.exe")
+	require.NoError(t, os.WriteFile(input, []byte("MZ"), 0o600))
+
+	alias := filepath.Join(dir, "alias.exe")
+	require.NoError(t, os.Symlink(input, alias))
+
+	fake := &signer.Fake{}
+	err := fake.Sign(t.Context(), &signer.Request{InputPath: input, OutputPath: alias})
+	require.ErrorIs(t, err, signer.ErrSamePath)
+}
+
 func TestFakeSignMissingInput(t *testing.T) {
 	t.Parallel()
 
@@ -84,6 +126,6 @@ func TestFakeHealth(t *testing.T) {
 	require.NoError(t, fake.Health(t.Context()))
 
 	errDown := errors.New("pcscd is down")
-	fake.HealthErr = errDown
+	fake.SetHealthErr(errDown)
 	require.ErrorIs(t, fake.Health(t.Context()), errDown)
 }
