@@ -72,12 +72,13 @@ func TestHealth(t *testing.T) {
 	assert.Equal(t, http.StatusOK, recorder.Code)
 	assert.Equal(t, "OK\n", recorder.Body.String())
 
-	fake.HealthErr = errors.New("token unplugged")
+	fake.SetHealthErr(errors.New("token unplugged"))
+
 	recorder = httptest.NewRecorder()
 	healthReq = httptest.NewRequestWithContext(t.Context(), http.MethodGet, codesign.HealthPath, http.NoBody)
 	handler.ServeHTTP(recorder, healthReq)
 	assert.Equal(t, http.StatusServiceUnavailable, recorder.Code)
-	assert.Contains(t, recorder.Body.String(), "token unplugged")
+	assert.Equal(t, "unhealthy\n", recorder.Body.String(), "unauthenticated health must not leak backend errors")
 }
 
 func TestSignWithToken(t *testing.T) {
@@ -201,7 +202,8 @@ func TestSignRejectsOversizedBody(t *testing.T) {
 func TestSignBackendFailure(t *testing.T) {
 	t.Parallel()
 
-	fake := &signer.Fake{SignErr: errors.New("pcscd lost the token")}
+	fake := &signer.Fake{}
+	fake.SetSignErr(errors.New("pcscd lost the token"))
 	handler := newServer(t, fake)
 
 	recorder := httptest.NewRecorder()
@@ -209,7 +211,7 @@ func TestSignBackendFailure(t *testing.T) {
 		"Authorization": "Bearer " + goodToken,
 	}))
 	assert.Equal(t, http.StatusInternalServerError, recorder.Code)
-	assert.Contains(t, recorder.Body.String(), "pcscd lost the token")
+	assert.Equal(t, "signing failed\n", recorder.Body.String(), "backend errors stay in the server log")
 }
 
 func TestSignMSIMagic(t *testing.T) {
@@ -249,6 +251,35 @@ func TestSignSanitizesEvilFilename(t *testing.T) {
 	assert.True(t, strings.HasSuffix(requests[0].InputPath, ".exe"),
 		"weird extensions fall back to the magic-derived one, got %s", requests[0].InputPath)
 	assert.NotContains(t, requests[0].InputPath, "..")
+}
+
+func TestSignExtensionMatchesMagic(t *testing.T) {
+	t.Parallel()
+
+	fake := &signer.Fake{}
+	handler := newServer(t, fake)
+
+	msi := string([]byte{0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1}) + " fake msi"
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, signRequest(t.Context(), msi, map[string]string{
+		"Authorization":         "Bearer " + goodToken,
+		codesign.HeaderFilename: "app.exe",
+	}))
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	assert.True(t, strings.HasSuffix(fake.Requests()[0].InputPath, ".msi"),
+		"MSI magic wins over a .exe filename")
+
+	fake = &signer.Fake{}
+	handler = newServer(t, fake)
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, signRequest(t.Context(), peBody, map[string]string{
+		"Authorization":         "Bearer " + goodToken,
+		codesign.HeaderFilename: "plugin.dll",
+	}))
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	assert.True(t, strings.HasSuffix(fake.Requests()[0].InputPath, ".dll"),
+		"PE-compatible extensions are preserved")
 }
 
 func TestServeAndShutdown(t *testing.T) {

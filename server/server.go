@@ -4,8 +4,8 @@
 // check (that is what SSH tunnels land on). Requests proxied by nginx or a
 // Docker network are never loopback, so they always authenticate.
 //
-// Signing is serialized with a mutex because the hardware token performs one
-// operation at a time.
+// Signing and token-touching health checks share a mutex because the
+// hardware token performs one operation at a time.
 package server
 
 import (
@@ -36,9 +36,15 @@ const (
 	DefaultMaxBody = 100 << 20
 	// shutdownWait bounds a graceful shutdown.
 	shutdownWait = 10 * time.Second
-	// readHeaderWait bounds reading request headers, mostly to satisfy
-	// slow-loris concerns on a loopback bind.
+	// readHeaderWait bounds reading request headers (slow-loris).
 	readHeaderWait = 10 * time.Second
+	// bodyWait bounds reading a full upload and writing the signed result.
+	// Sized for DefaultMaxBody over a modest link plus the timestamp round trip.
+	bodyWait = 5 * time.Minute
+	// maxInFlightUploads caps concurrent body reads. Only one request signs
+	// at a time; extras would otherwise each retain up to MaxBody on disk
+	// (and previously in memory) while waiting on the token.
+	maxInFlightUploads = 2
 )
 
 var (
@@ -49,6 +55,8 @@ var (
 	ErrNoToken = errors.New("missing Authorization bearer token")
 	// errNotSignable rejects uploads that are not PE or MSI files.
 	errNotSignable = errors.New("request body is not a PE or MSI file")
+	// errBusy rejects a sign request when too many uploads are already in flight.
+	errBusy = errors.New("too many signing requests in flight")
 )
 
 // Verifier validates a GitHub Actions OIDC bearer token. *oidc.Verifier
@@ -77,14 +85,18 @@ type Config struct {
 
 // Server is the signerd HTTP daemon. Create one with New.
 type Server struct {
-	config Config
-	signMu sync.Mutex
-	web    *http.Server
+	config  Config
+	signMu  sync.Mutex
+	uploads chan struct{}
+	web     *http.Server
 }
 
 // New returns a Server with defaults applied.
 func New(config *Config) *Server {
-	server := &Server{config: *config}
+	server := &Server{
+		config:  *config,
+		uploads: make(chan struct{}, maxInFlightUploads),
+	}
 
 	if server.config.Addr == "" {
 		server.config.Addr = DefaultAddr
@@ -110,6 +122,8 @@ func New(config *Config) *Server {
 		Addr:              server.config.Addr,
 		Handler:           mux,
 		ReadHeaderTimeout: readHeaderWait,
+		ReadTimeout:       bodyWait,
+		WriteTimeout:      bodyWait,
 	}
 
 	return server
@@ -153,12 +167,15 @@ func (s *Server) Serve(ctx context.Context) error {
 }
 
 // handleHealth reports whether the backend can sign right now. It requires
-// no authentication and never touches the PIN.
+// no authentication and never touches the PIN. Details stay in the log:
+// this endpoint is unauthenticated.
 func (s *Server) handleHealth(resp http.ResponseWriter, req *http.Request) {
-	err := s.config.Signer.Health(req.Context())
+	err := s.withToken(req.Context(), func(ctx context.Context) error {
+		return s.config.Signer.Health(ctx)
+	})
 	if err != nil {
 		s.config.Logger.Error("health check failed", "error", err)
-		http.Error(resp, "unhealthy: "+err.Error(), http.StatusServiceUnavailable)
+		http.Error(resp, "unhealthy", http.StatusServiceUnavailable)
 
 		return
 	}
@@ -166,44 +183,33 @@ func (s *Server) handleHealth(resp http.ResponseWriter, req *http.Request) {
 	_, _ = resp.Write([]byte("OK\n"))
 }
 
-// handleSign authenticates the caller, validates the upload, and returns the
-// signed file.
+// handleSign authenticates the caller, streams the upload to disk, and
+// returns the signed file.
 func (s *Server) handleSign(resp http.ResponseWriter, req *http.Request) {
 	start := time.Now()
 
 	caller, err := s.authenticate(req)
 	if err != nil {
 		s.config.Logger.Warn("sign request rejected", "remote", req.RemoteAddr, "error", err)
-		http.Error(resp, "unauthorized: "+err.Error(), http.StatusUnauthorized)
+		http.Error(resp, "unauthorized", http.StatusUnauthorized)
 
 		return
 	}
 
-	body, err := io.ReadAll(http.MaxBytesReader(resp, req.Body, s.config.MaxBody))
+	select {
+	case s.uploads <- struct{}{}:
+		defer func() { <-s.uploads }()
+	default:
+		http.Error(resp, "too many signing requests", http.StatusServiceUnavailable)
+
+		return
+	}
+
+	filename := req.Header.Get(codesign.HeaderFilename)
+
+	signed, size, err := s.signUpload(resp, req)
 	if err != nil {
-		status := http.StatusBadRequest
-
-		maxBytesErr := &http.MaxBytesError{}
-		if errors.As(err, &maxBytesErr) {
-			status = http.StatusRequestEntityTooLarge
-		}
-
-		http.Error(resp, "reading request body: "+err.Error(), status)
-
-		return
-	}
-
-	kind := fileKind(body)
-	if kind == "" {
-		http.Error(resp, errNotSignable.Error(), http.StatusUnsupportedMediaType)
-
-		return
-	}
-
-	signed, err := s.sign(req, body, kind)
-	if err != nil {
-		s.config.Logger.Error("signing failed", "remote", req.RemoteAddr, "caller", caller, "error", err)
-		http.Error(resp, "signing failed: "+err.Error(), http.StatusInternalServerError)
+		s.replySignError(resp, req, caller, err)
 
 		return
 	}
@@ -211,12 +217,40 @@ func (s *Server) handleSign(resp http.ResponseWriter, req *http.Request) {
 	s.config.Logger.Info("signed file",
 		"remote", req.RemoteAddr,
 		"caller", caller,
-		"filename", req.Header.Get(codesign.HeaderFilename),
-		"bytes", len(body),
+		"filename", filename,
+		"bytes", size,
 		"elapsed", time.Since(start).Round(time.Millisecond))
 
 	resp.Header().Set("Content-Type", "application/octet-stream")
 	_, _ = resp.Write(signed)
+}
+
+// replySignError maps a signing failure to an HTTP status without leaking
+// backend or token diagnostics to the caller.
+func (s *Server) replySignError(resp http.ResponseWriter, req *http.Request, caller string, err error) {
+	status := http.StatusInternalServerError
+	message := "signing failed"
+
+	switch {
+	case errors.Is(err, errNotSignable):
+		status = http.StatusUnsupportedMediaType
+		message = errNotSignable.Error()
+	case errors.As(err, new(*http.MaxBytesError)):
+		status = http.StatusRequestEntityTooLarge
+		message = "request body too large"
+	case errors.Is(err, errBusy):
+		status = http.StatusServiceUnavailable
+		message = errBusy.Error()
+	default:
+		s.config.Logger.Error("signing failed", "remote", req.RemoteAddr, "caller", caller, "error", err)
+	}
+
+	if status != http.StatusInternalServerError {
+		s.config.Logger.Warn("sign request rejected",
+			"remote", req.RemoteAddr, "caller", caller, "error", err)
+	}
+
+	http.Error(resp, message, status)
 }
 
 // authenticate decides whether this request may sign. Loopback peers are
@@ -245,25 +279,43 @@ func (s *Server) authenticate(req *http.Request) (string, error) {
 	return claims.Repository, nil
 }
 
-// sign writes the upload to a temp file, runs the backend under the signing
-// mutex, and returns the signed bytes. Temp files keep a real extension
-// because the tools pick their format from it.
-func (s *Server) sign(req *http.Request, body []byte, kind string) ([]byte, error) {
+// signUpload streams the body to a temp file, checks PE/MSI magic, runs the
+// backend under the token mutex, and returns the signed bytes.
+func (s *Server) signUpload(resp http.ResponseWriter, req *http.Request) ([]byte, int64, error) {
 	dir, err := os.MkdirTemp(s.config.WorkDir, "signerd-*")
 	if err != nil {
-		return nil, fmt.Errorf("creating temp dir: %w", err)
+		return nil, 0, fmt.Errorf("creating temp dir: %w", err)
 	}
 	defer os.RemoveAll(dir)
+
+	upload := filepath.Join(dir, "upload")
+
+	file, err := os.OpenFile(upload, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600) //nolint:mnd
+	if err != nil {
+		return nil, 0, fmt.Errorf("creating upload file: %w", err)
+	}
+
+	size, err := io.Copy(file, http.MaxBytesReader(resp, req.Body, s.config.MaxBody))
+	if err != nil {
+		_ = file.Close()
+
+		return nil, 0, fmt.Errorf("reading request body: %w", err)
+	}
+
+	kind, err := detectKind(file)
+	_ = file.Close()
+
+	if err != nil {
+		return nil, 0, err
+	}
 
 	ext := safeExtension(req.Header.Get(codesign.HeaderFilename), kind)
 	input := filepath.Join(dir, "input"+ext)
 	output := filepath.Join(dir, "output"+ext)
 
-	const onlyOwner = 0o600
-
-	err = os.WriteFile(input, body, onlyOwner)
+	err = os.Rename(upload, input)
 	if err != nil {
-		return nil, fmt.Errorf("writing temp file: %w", err)
+		return nil, 0, fmt.Errorf("naming temp file: %w", err)
 	}
 
 	request := &signer.Request{
@@ -273,27 +325,38 @@ func (s *Server) sign(req *http.Request, body []byte, kind string) ([]byte, erro
 		URL:        req.Header.Get(codesign.HeaderURL),
 	}
 
-	err = s.signLocked(req.Context(), request)
+	err = s.withToken(req.Context(), func(ctx context.Context) error {
+		return s.config.Signer.Sign(ctx, request)
+	})
 	if err != nil {
-		return nil, fmt.Errorf("backend: %w", err)
+		return nil, 0, fmt.Errorf("backend: %w", err)
 	}
 
 	signed, err := os.ReadFile(output)
 	if err != nil {
-		return nil, fmt.Errorf("reading signed file: %w", err)
+		return nil, 0, fmt.Errorf("reading signed file: %w", err)
 	}
 
-	return signed, nil
+	return signed, size, nil
 }
 
-// signLocked serializes backend calls. The unlock is deferred so a panicking
-// backend cannot leave the mutex held and deadlock every later request.
-func (s *Server) signLocked(ctx context.Context, request *signer.Request) error {
+// withToken serializes hardware-token operations (sign and health). The
+// unlock is deferred so a panicking backend cannot deadlock the daemon.
+func (s *Server) withToken(ctx context.Context, operation func(context.Context) error) error {
 	s.signMu.Lock()
 	defer s.signMu.Unlock()
 
-	//nolint:wrapcheck // The caller wraps with backend context.
-	return s.config.Signer.Sign(ctx, request)
+	err := ctx.Err()
+	if err != nil {
+		return fmt.Errorf("token operation canceled: %w", err)
+	}
+
+	err = operation(ctx)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // isLoopback reports whether the peer address is 127.0.0.0/8 or ::1.
@@ -308,6 +371,28 @@ func isLoopback(remoteAddr string) bool {
 	return addr != nil && addr.IsLoopback()
 }
 
+// detectKind reads magic bytes from the start of an uploaded file.
+func detectKind(file *os.File) (string, error) {
+	_, err := file.Seek(0, io.SeekStart)
+	if err != nil {
+		return "", fmt.Errorf("rewinding upload: %w", err)
+	}
+
+	peek := make([]byte, 8) //nolint:mnd // PE is 2 bytes, MSI is 8.
+
+	n, err := io.ReadFull(file, peek)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("reading magic: %w", err)
+	}
+
+	kind := fileKind(peek[:n])
+	if kind == "" {
+		return "", errNotSignable
+	}
+
+	return kind, nil
+}
+
 // fileKind returns a default file extension for the upload based on its
 // magic bytes, or "" when the upload is not signable.
 func fileKind(body []byte) string {
@@ -315,7 +400,6 @@ func fileKind(body []byte) string {
 		return ".exe"
 	}
 
-	// The compound-file signature MSI packages start with.
 	msiMagic := []byte{0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1}
 	if bytes.HasPrefix(body, msiMagic) {
 		return ".msi"
@@ -324,22 +408,45 @@ func fileKind(body []byte) string {
 	return ""
 }
 
-// safeExtension returns the sanitized extension of the client-supplied file
-// name, or the magic-derived fallback when the name is absent or weird. Only
-// short, plain alphanumeric extensions are reused in temp file names.
-func safeExtension(filename, fallback string) string {
+// safeExtension returns a temp-file extension compatible with the
+// magic-derived kind. A PE named ".msi" (or an MSI named ".exe") would make
+// osslsigncode/jsign parse the file as the wrong format.
+func safeExtension(filename, kind string) string {
+	ext := sanitizedExt(filename)
+	if !compatibleExt(ext, kind) {
+		return kind
+	}
+
+	return ext
+}
+
+func sanitizedExt(filename string) string {
 	const maxExtension = 6 // dot plus up to five characters, .setup
 
 	ext := strings.ToLower(filepath.Ext(filepath.Base(filename)))
 	if len(ext) < 2 || len(ext) > maxExtension {
-		return fallback
+		return ""
 	}
 
 	for _, char := range ext[1:] {
 		if (char < 'a' || char > 'z') && (char < '0' || char > '9') {
-			return fallback
+			return ""
 		}
 	}
 
 	return ext
+}
+
+func compatibleExt(ext, kind string) bool {
+	switch kind {
+	case ".exe":
+		switch ext {
+		case ".exe", ".dll", ".sys", ".efi", ".ocx", ".cpl":
+			return true
+		}
+	case ".msi":
+		return ext == ".msi"
+	}
+
+	return false
 }

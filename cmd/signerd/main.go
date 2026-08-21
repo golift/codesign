@@ -59,10 +59,9 @@ type Config struct {
 	// TimestampURL overrides the RFC 3161 timestamp authority.
 	TimestampURL string `toml:"timestamp_url" xml:"timestamp_url"`
 	// HealthCommand is the full health-check command (program + args) run
-	// by GET /health. The default only proves the signing tool is runnable;
-	// point this at something that touches the token — for example
-	// ["pkcs11-tool", "--module", "<pkcs11_module>", "--list-token-slots"]
-	// — so /health fails when the key is unplugged. Never needs the PIN.
+	// by GET /health. The default is a PIN-free pkcs11-tool probe that fails
+	// when the token is unplugged. Override to target a specific slot or
+	// certificate. Never needs the PIN.
 	HealthCommand []string `toml:"health_command" xml:"health_command"`
 	// Digest overrides the digest algorithm (default matches ECC P-384).
 	Digest string `toml:"digest" xml:"digest"`
