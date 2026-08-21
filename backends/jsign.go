@@ -29,8 +29,11 @@ type JsignConfig struct {
 	Name string
 	// URL is the default Authenticode program URL.
 	URL string
-	// HealthArgs replaces the default health-check arguments ("--help").
-	HealthArgs []string
+	// HealthCommand is the full health-check command (program + args). The
+	// default, "<Command> --help", only proves the tool is runnable. Point
+	// it at something that touches the token to catch an unplugged key.
+	// It must never need the PIN.
+	HealthCommand []string
 	// Run defaults to Exec.
 	Run Runner
 }
@@ -42,8 +45,13 @@ type Jsign struct {
 	config JsignConfig
 }
 
-// NewJsign returns a jsign backend with defaults applied.
+// NewJsign returns a jsign backend with defaults applied. A nil config gets
+// pure defaults.
 func NewJsign(config *JsignConfig) *Jsign {
+	if config == nil {
+		config = &JsignConfig{}
+	}
+
 	backend := &Jsign{config: *config}
 
 	if backend.config.Command == "" {
@@ -62,8 +70,8 @@ func NewJsign(config *JsignConfig) *Jsign {
 		backend.config.Digest = "SHA-384"
 	}
 
-	if len(backend.config.HealthArgs) == 0 {
-		backend.config.HealthArgs = []string{"--help"}
+	if len(backend.config.HealthCommand) == 0 {
+		backend.config.HealthCommand = []string{backend.config.Command, "--help"}
 	}
 
 	if backend.config.Run == nil {
@@ -115,7 +123,7 @@ func (s *Jsign) Sign(ctx context.Context, req *signer.Request) error {
 
 // Health runs the configured health-check command without a PIN.
 func (s *Jsign) Health(ctx context.Context) error {
-	_, err := s.config.Run(ctx, s.config.Command, s.config.HealthArgs...)
+	_, err := s.config.Run(ctx, s.config.HealthCommand[0], s.config.HealthCommand[1:]...)
 	if err != nil {
 		return fmt.Errorf("jsign health: %w", err)
 	}

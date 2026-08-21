@@ -11,6 +11,7 @@ package backends
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 )
@@ -49,18 +50,32 @@ func fallback(request, configured string) string {
 	return configured
 }
 
-// copyFile copies a file for tools that only sign in place.
+// copyFile streams a file copy for tools that only sign in place. Inputs can
+// be large (MSI especially), so the copy never buffers the whole file.
 func copyFile(source, destination string) error {
-	data, err := os.ReadFile(source)
+	input, err := os.Open(source)
 	if err != nil {
-		return fmt.Errorf("reading %s: %w", source, err)
+		return fmt.Errorf("opening %s: %w", source, err)
 	}
+	defer input.Close()
 
 	const onlyOwner = 0o600
 
-	err = os.WriteFile(destination, data, onlyOwner)
+	output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, onlyOwner)
 	if err != nil {
-		return fmt.Errorf("writing %s: %w", destination, err)
+		return fmt.Errorf("creating %s: %w", destination, err)
+	}
+
+	_, err = io.Copy(output, input)
+	if err != nil {
+		_ = output.Close()
+
+		return fmt.Errorf("copying to %s: %w", destination, err)
+	}
+
+	err = output.Close()
+	if err != nil {
+		return fmt.Errorf("closing %s: %w", destination, err)
 	}
 
 	return nil

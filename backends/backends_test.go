@@ -116,15 +116,24 @@ func TestOSSLSigncodeHealth(t *testing.T) {
 	require.Len(t, runner.calls, 1)
 	assert.Equal(t, []string{"osc", "--version"}, runner.calls[0])
 
+	// A custom health command may run a different program entirely, so
+	// operators can point it at something that touches the token.
 	custom := &fakeRunner{}
 	backend = backends.NewOSSLSigncode(&backends.OSSLConfig{
-		Command:    "osc",
-		HealthArgs: []string{"verify", "--token"},
-		Run:        custom.run,
+		Command:       "osc",
+		HealthCommand: []string{"pkcs11-tool", "--module", "/usr/lib/libykcs11.so", "--list-token-slots"},
+		Run:           custom.run,
 	})
 	require.NoError(t, backend.Health(t.Context()))
 	require.Len(t, custom.calls, 1)
-	assert.Equal(t, []string{"osc", "verify", "--token"}, custom.calls[0])
+	assert.Equal(t, []string{"pkcs11-tool", "--module", "/usr/lib/libykcs11.so", "--list-token-slots"}, custom.calls[0])
+}
+
+func TestNilConfigsDoNotPanic(t *testing.T) {
+	t.Parallel()
+
+	require.NotNil(t, backends.NewOSSLSigncode(nil))
+	require.NotNil(t, backends.NewJsign(nil))
 }
 
 func TestJsignSign(t *testing.T) {

@@ -32,10 +32,12 @@ type OSSLConfig struct {
 	Name string
 	// URL is the default Authenticode program URL.
 	URL string
-	// HealthArgs replaces the default health-check arguments ("--version").
+	// HealthCommand is the full health-check command (program + args). The
+	// default, "<Command> --version", only proves the tool is runnable.
 	// Point it at something that touches the token to catch an unplugged
-	// key, for example a pkcs11-tool listing via a wrapper script.
-	HealthArgs []string
+	// key, for example: ["pkcs11-tool", "--module", "<PKCS11Module>",
+	// "--list-token-slots"]. It must never need the PIN.
+	HealthCommand []string
 	// Run defaults to Exec.
 	Run Runner
 }
@@ -47,7 +49,12 @@ type OSSLSigncode struct {
 }
 
 // NewOSSLSigncode returns an osslsigncode backend with defaults applied.
+// A nil config gets pure defaults.
 func NewOSSLSigncode(config *OSSLConfig) *OSSLSigncode {
+	if config == nil {
+		config = &OSSLConfig{}
+	}
+
 	backend := &OSSLSigncode{config: *config}
 
 	if backend.config.Command == "" {
@@ -62,8 +69,8 @@ func NewOSSLSigncode(config *OSSLConfig) *OSSLSigncode {
 		backend.config.Digest = "sha384"
 	}
 
-	if len(backend.config.HealthArgs) == 0 {
-		backend.config.HealthArgs = []string{"--version"}
+	if len(backend.config.HealthCommand) == 0 {
+		backend.config.HealthCommand = []string{backend.config.Command, "--version"}
 	}
 
 	if backend.config.Run == nil {
@@ -111,7 +118,7 @@ func (s *OSSLSigncode) Sign(ctx context.Context, req *signer.Request) error {
 
 // Health runs the configured health-check command without a PIN.
 func (s *OSSLSigncode) Health(ctx context.Context) error {
-	_, err := s.config.Run(ctx, s.config.Command, s.config.HealthArgs...)
+	_, err := s.config.Run(ctx, s.config.HealthCommand[0], s.config.HealthCommand[1:]...)
 	if err != nil {
 		return fmt.Errorf("osslsigncode health: %w", err)
 	}
