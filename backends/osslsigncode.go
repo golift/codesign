@@ -32,11 +32,10 @@ type OSSLConfig struct {
 	Name string
 	// URL is the default Authenticode program URL.
 	URL string
-	// HealthCommand is the full health-check command (program + args). The
-	// default, "<Command> --version", only proves the tool is runnable.
-	// Point it at something that touches the token to catch an unplugged
-	// key, for example: ["pkcs11-tool", "--module", "<PKCS11Module>",
-	// "--list-token-slots"]. It must never need the PIN.
+	// HealthCommand is the full health-check command (program + args).
+	// The default is a PIN-free pkcs11-tool probe of PKCS11Module that
+	// fails when the token is unplugged. Override to target a specific
+	// slot or certificate label. It must never need the PIN.
 	HealthCommand []string
 	// Run defaults to Exec.
 	Run Runner
@@ -70,7 +69,7 @@ func NewOSSLSigncode(config *OSSLConfig) *OSSLSigncode {
 	}
 
 	if len(backend.config.HealthCommand) == 0 {
-		backend.config.HealthCommand = []string{backend.config.Command, "--version"}
+		backend.config.HealthCommand = defaultTokenHealth(backend.config.PKCS11Module)
 	}
 
 	if backend.config.Run == nil {
@@ -82,6 +81,11 @@ func NewOSSLSigncode(config *OSSLConfig) *OSSLSigncode {
 
 // Sign invokes osslsigncode to sign the request input into the output path.
 func (s *OSSLSigncode) Sign(ctx context.Context, req *signer.Request) error {
+	err := signer.Check(req)
+	if err != nil {
+		return fmt.Errorf("osslsigncode sign: %w", err)
+	}
+
 	args := []string{
 		"sign",
 		"-pkcs11module", s.config.PKCS11Module,
@@ -108,7 +112,7 @@ func (s *OSSLSigncode) Sign(ctx context.Context, req *signer.Request) error {
 
 	args = append(args, "-in", req.InputPath, "-out", req.OutputPath)
 
-	_, err := s.config.Run(ctx, s.config.Command, args...)
+	_, err = s.config.Run(ctx, s.config.Command, args...)
 	if err != nil {
 		return fmt.Errorf("osslsigncode sign: %w", err)
 	}
@@ -118,7 +122,7 @@ func (s *OSSLSigncode) Sign(ctx context.Context, req *signer.Request) error {
 
 // Health runs the configured health-check command without a PIN.
 func (s *OSSLSigncode) Health(ctx context.Context) error {
-	_, err := s.config.Run(ctx, s.config.HealthCommand[0], s.config.HealthCommand[1:]...)
+	err := runHealth(ctx, s.config.Run, s.config.HealthCommand)
 	if err != nil {
 		return fmt.Errorf("osslsigncode health: %w", err)
 	}

@@ -103,22 +103,34 @@ func TestOSSLSigncodeSignError(t *testing.T) {
 	runner := &fakeRunner{err: errSign}
 	backend := backends.NewOSSLSigncode(&backends.OSSLConfig{Run: runner.run})
 
-	err := backend.Sign(t.Context(), &signer.Request{InputPath: "in", OutputPath: "out"})
+	err := backend.Sign(t.Context(), &signer.Request{InputPath: "in.exe", OutputPath: "out.exe"})
 	require.ErrorIs(t, err, errSign)
 }
 
 func TestOSSLSigncodeHealth(t *testing.T) {
 	t.Parallel()
 
-	runner := &fakeRunner{}
-	backend := backends.NewOSSLSigncode(&backends.OSSLConfig{Command: "osc", Run: runner.run})
+	runner := &fakeRunner{output: []byte("Certificate Object; type = X.509 cert")}
+	backend := backends.NewOSSLSigncode(&backends.OSSLConfig{
+		PKCS11Module: "/usr/lib/libykcs11.so",
+		Run:          runner.run,
+	})
 	require.NoError(t, backend.Health(t.Context()))
 	require.Len(t, runner.calls, 1)
-	assert.Equal(t, []string{"osc", "--version"}, runner.calls[0])
+	assert.Equal(t, []string{
+		"pkcs11-tool", "--module", "/usr/lib/libykcs11.so",
+		"--list-objects", "--type", "cert",
+	}, runner.calls[0])
 
-	// A custom health command may run a different program entirely, so
-	// operators can point it at something that touches the token.
-	custom := &fakeRunner{}
+	empty := &fakeRunner{}
+	backend = backends.NewOSSLSigncode(&backends.OSSLConfig{
+		PKCS11Module: "/usr/lib/libykcs11.so",
+		Run:          empty.run,
+	})
+	err := backend.Health(t.Context())
+	require.ErrorIs(t, err, backends.ErrNoToken)
+
+	custom := &fakeRunner{output: []byte("slot 0: YubiKey PIV")}
 	backend = backends.NewOSSLSigncode(&backends.OSSLConfig{
 		Command:       "osc",
 		HealthCommand: []string{"pkcs11-tool", "--module", "/usr/lib/libykcs11.so", "--list-token-slots"},
@@ -127,6 +139,20 @@ func TestOSSLSigncodeHealth(t *testing.T) {
 	require.NoError(t, backend.Health(t.Context()))
 	require.Len(t, custom.calls, 1)
 	assert.Equal(t, []string{"pkcs11-tool", "--module", "/usr/lib/libykcs11.so", "--list-token-slots"}, custom.calls[0])
+}
+
+func TestSignRejectsContractViolations(t *testing.T) {
+	t.Parallel()
+
+	ossl := backends.NewOSSLSigncode(&backends.OSSLConfig{Run: (&fakeRunner{output: []byte("x")}).run})
+	jsign := backends.NewJsign(&backends.JsignConfig{Run: (&fakeRunner{output: []byte("x")}).run})
+
+	same := &signer.Request{InputPath: "same.exe", OutputPath: "same.exe"}
+
+	for _, backend := range []signer.Signer{ossl, jsign} {
+		require.ErrorIs(t, backend.Sign(t.Context(), nil), signer.ErrNilRequest)
+		require.ErrorIs(t, backend.Sign(t.Context(), same), signer.ErrSamePath)
+	}
 }
 
 func TestNilConfigsDoNotPanic(t *testing.T) {
@@ -199,11 +225,11 @@ func TestJsignSignMissingInput(t *testing.T) {
 func TestJsignHealth(t *testing.T) {
 	t.Parallel()
 
-	runner := &fakeRunner{}
+	runner := &fakeRunner{output: []byte("slot 0: YubiKey PIV")}
 	backend := backends.NewJsign(&backends.JsignConfig{Run: runner.run})
 	require.NoError(t, backend.Health(t.Context()))
 	require.Len(t, runner.calls, 1)
-	assert.Equal(t, []string{"jsign", "--help"}, runner.calls[0])
+	assert.Equal(t, []string{"pkcs11-tool", "--list-token-slots"}, runner.calls[0])
 }
 
 func TestExec(t *testing.T) {

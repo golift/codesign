@@ -9,12 +9,20 @@
 package backends
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 )
+
+// ErrNoToken is returned by Health when the probe ran but produced no
+// output, which usually means the configured token is unplugged.
+var ErrNoToken = errors.New("health check produced no token or certificate output")
+
+var errNoHealthCommand = errors.New("health command is empty")
 
 const (
 	// DefaultTimestampURL is SSL.com's RFC 3161 timestamp authority.
@@ -79,4 +87,36 @@ func copyFile(source, destination string) error {
 	}
 
 	return nil
+}
+
+// runHealth runs the configured health command. Empty stdout is treated as
+// failure so a PIN-free token probe (pkcs11-tool --list-objects) cannot
+// report healthy when the key is absent.
+func runHealth(ctx context.Context, run Runner, command []string) error {
+	if len(command) == 0 {
+		return errNoHealthCommand
+	}
+
+	output, err := run(ctx, command[0], command[1:]...)
+	if err != nil {
+		return err
+	}
+
+	if len(bytes.TrimSpace(output)) == 0 {
+		return ErrNoToken
+	}
+
+	return nil
+}
+
+// defaultTokenHealth is a PIN-free PKCS#11 probe. When a module path is
+// known it lists certificates on that module; otherwise it lists token
+// slots via the system PKCS#11 search path. Both fail (nonzero or empty)
+// when no token is present.
+func defaultTokenHealth(module string) []string {
+	if module != "" {
+		return []string{"pkcs11-tool", "--module", module, "--list-objects", "--type", "cert"}
+	}
+
+	return []string{"pkcs11-tool", "--list-token-slots"}
 }

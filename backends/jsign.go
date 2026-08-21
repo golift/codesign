@@ -29,10 +29,12 @@ type JsignConfig struct {
 	Name string
 	// URL is the default Authenticode program URL.
 	URL string
-	// HealthCommand is the full health-check command (program + args). The
-	// default, "<Command> --help", only proves the tool is runnable. Point
-	// it at something that touches the token to catch an unplugged key.
-	// It must never need the PIN.
+	// PKCS11Module is optional; when set, the default health check lists
+	// certificates on this module. jsign itself uses StoreType, not this.
+	PKCS11Module string
+	// HealthCommand is the full health-check command (program + args).
+	// The default is a PIN-free pkcs11-tool probe that fails when the
+	// token is unplugged. It must never need the PIN.
 	HealthCommand []string
 	// Run defaults to Exec.
 	Run Runner
@@ -71,7 +73,7 @@ func NewJsign(config *JsignConfig) *Jsign {
 	}
 
 	if len(backend.config.HealthCommand) == 0 {
-		backend.config.HealthCommand = []string{backend.config.Command, "--help"}
+		backend.config.HealthCommand = defaultTokenHealth(backend.config.PKCS11Module)
 	}
 
 	if backend.config.Run == nil {
@@ -83,7 +85,12 @@ func NewJsign(config *JsignConfig) *Jsign {
 
 // Sign copies the input to the output path, then invokes jsign on the copy.
 func (s *Jsign) Sign(ctx context.Context, req *signer.Request) error {
-	err := copyFile(req.InputPath, req.OutputPath)
+	err := signer.Check(req)
+	if err != nil {
+		return fmt.Errorf("jsign sign: %w", err)
+	}
+
+	err = copyFile(req.InputPath, req.OutputPath)
 	if err != nil {
 		return fmt.Errorf("jsign sign: %w", err)
 	}
@@ -123,7 +130,7 @@ func (s *Jsign) Sign(ctx context.Context, req *signer.Request) error {
 
 // Health runs the configured health-check command without a PIN.
 func (s *Jsign) Health(ctx context.Context) error {
-	_, err := s.config.Run(ctx, s.config.HealthCommand[0], s.config.HealthCommand[1:]...)
+	err := runHealth(ctx, s.config.Run, s.config.HealthCommand)
 	if err != nil {
 		return fmt.Errorf("jsign health: %w", err)
 	}
