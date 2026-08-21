@@ -18,8 +18,15 @@ with your own ssl/proxy boilerplate.
    ```
 
    With Docker, `signerd` resolves over the shared Docker network; SWAG's
-   `resolver.conf` handles container DNS. Without Docker, use
-   `http://127.0.0.1:8750`.
+   `resolver.conf` handles container DNS.
+
+   > **Never use a loopback upstream** such as `http://127.0.0.1:8750`.
+   > signerd skips the OIDC gate for loopback peers (that is the operator
+   > SSH-tunnel path), so nginx proxying from loopback would give every
+   > proxied request that free pass. Without Docker, bind signerd to a
+   > private non-loopback address (a dedicated bridge or the host's LAN IP
+   > firewalled to nginx) so the daemon sees a non-loopback peer and
+   > demands OIDC.
 
 4. Reload nginx and verify the gates:
 

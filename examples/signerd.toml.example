@@ -45,6 +45,15 @@ cert_file = "/etc/signerd/chain.pem"
 #name = "My Application"
 #url = "https://app.example.com"
 
+# Health-check command run by GET /health (program + args). The default only
+# proves the signing tool is runnable; point it at something that touches the
+# token — never needing the PIN — so /health fails when the key is unplugged.
+#health_command = [
+#  "pkcs11-tool",
+#  "--module", "/usr/lib/x86_64-linux-gnu/libykcs11.so",
+#  "--list-token-slots",
+#]
+
 [github]
   # OIDC gate for remote (non-loopback) callers. GitHub Actions callers must
   # request their token with this audience; conventionally your public URL.

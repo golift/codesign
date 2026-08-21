@@ -15,10 +15,12 @@ RUN CGO_ENABLED=0 go build -ldflags "-s -w" -o /out/signerd ./cmd/signerd \
 FROM debian:bookworm-slim
 
 # pcscd + libccid reach the token; ykcs11 provides the PKCS#11 module;
-# osslsigncode is the default signing backend.
+# osslsigncode is the default signing backend; opensc supplies pkcs11-tool
+# for token-touching health checks (see health_command in signerd.toml).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         libccid \
+        opensc \
         osslsigncode \
         pcscd \
         ykcs11 \

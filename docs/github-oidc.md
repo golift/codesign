@@ -50,5 +50,13 @@ the token automatically, using the service URL as the audience.
 Requests that reach signerd **from its own loopback interface** skip OIDC.
 That is strictly for the operator SSH-tunnel workflow and on-host smoke
 tests. Requests proxied by nginx or crossing a Docker bridge network are not
-loopback and always authenticate. Never bind signerd to `0.0.0.0` on a host
-where the LAN can reach it.
+loopback and always authenticate.
+
+Two deployment rules keep the skip safe:
+
+- Never bind signerd to `0.0.0.0` on a host where the LAN can reach it.
+- Never point a reverse proxy at a loopback upstream
+  (`http://127.0.0.1:8750`). The daemon would see every proxied request as a
+  loopback peer and wave it through without a token, reducing your security
+  to mTLS alone. Proxy over a Docker network or another non-loopback address
+  instead (see nginx.md).

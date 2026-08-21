@@ -59,5 +59,19 @@ docker exec signerd osslsigncode --version
 curl -fsS http://127.0.0.1:8750/health   # from the host loopback publish
 ```
 
-`GET /health` fails when pcscd is up but the token is unplugged — wire that
-into unRAID or Home Assistant monitoring so a dead CI run tells you why.
+By default `GET /health` only proves the signing tool is installed and
+runnable — it does **not** touch the token, so an unplugged YubiKey still
+returns 200. To make monitoring catch a missing key, set `health_command` in
+`signerd.toml` to something that talks to the token without a PIN (the image
+ships `pkcs11-tool` from opensc for this):
+
+```toml
+health_command = [
+  "pkcs11-tool",
+  "--module", "/usr/lib/x86_64-linux-gnu/libykcs11.so",
+  "--list-token-slots",
+]
+```
+
+With that set, wire `/health` into unRAID or Home Assistant monitoring so a
+dead CI run tells you why.

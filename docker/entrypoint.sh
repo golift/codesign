@@ -5,10 +5,16 @@ set -e
 
 pcscd --foreground &
 
-# Give pcscd a moment to enumerate the CCID reader.
-for _ in 1 2 3 4 5 6 7 8 9 10; do
+# Wait for pcscd to enumerate the CCID reader. Without its socket every sign
+# request would fail with a confusing PKCS#11 error, so refuse to start.
+for _ in $(seq 1 20); do
   [ -S /run/pcscd/pcscd.comm ] && break
   sleep 0.5
 done
+
+if [ ! -S /run/pcscd/pcscd.comm ]; then
+  echo "FATAL: pcscd socket never appeared at /run/pcscd/pcscd.comm" >&2
+  exit 1
+fi
 
 exec /usr/local/bin/signerd "$@"
