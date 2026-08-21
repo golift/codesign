@@ -4,11 +4,14 @@
 #   3. Force-moves the floating tags (v1, v1.2) that GitHub Actions
 #      consumers track with `uses: golift/codesign@v1`.
 #
-# The trigger matches ONLY vN.N.N, never the floating vN / vN.N tags this
-# workflow itself pushes, so it cannot recurse. Never retag a published
-# vN.N.N. Breaking Action input/output changes mean v2.0.0 and a new v2
-# floater. Floating tags are for `uses:`; Go module consumers resolve real
-# semver tags.
+# The trigger matches ONLY vN.N.N. GitHub's filter-pattern syntax (not a
+# regex, but it does support `[0-9]` classes and `+` repetition — see the
+# "filter pattern cheat sheet" in the GitHub Actions docs) must match the
+# whole tag, so the floating vN / vN.N tags this workflow itself pushes can
+# never re-trigger it, and neither can prerelease tags like v1.2.3-beta.
+# Never retag a published vN.N.N. Breaking Action input/output changes mean
+# v2.0.0 and a new v2 floater. Floating tags are for `uses:`; Go module
+# consumers resolve real semver tags.
 name: release
 on:
   push:
