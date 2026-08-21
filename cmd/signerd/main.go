@@ -58,6 +58,12 @@ type Config struct {
 	PINFile string `toml:"pin_file" xml:"pin_file"`
 	// TimestampURL overrides the RFC 3161 timestamp authority.
 	TimestampURL string `toml:"timestamp_url" xml:"timestamp_url"`
+	// HealthCommand is the full health-check command (program + args) run
+	// by GET /health. The default only proves the signing tool is runnable;
+	// point this at something that touches the token — for example
+	// ["pkcs11-tool", "--module", "<pkcs11_module>", "--list-token-slots"]
+	// — so /health fails when the key is unplugged. Never needs the PIN.
+	HealthCommand []string `toml:"health_command" xml:"health_command"`
 	// Digest overrides the digest algorithm (default matches ECC P-384).
 	Digest string `toml:"digest" xml:"digest"`
 	// Name is the default Authenticode program name.
@@ -191,7 +197,10 @@ func findConfigFile() string {
 
 	for _, candidate := range candidates {
 		_, err = os.Stat(candidate)
-		if err == nil {
+		// Anything but not-exist counts as a hit (permission problems, for
+		// example) so loadConfig surfaces a clear error instead of silently
+		// running on environment-only configuration.
+		if err == nil || !errors.Is(err, os.ErrNotExist) {
 			return candidate
 		}
 	}
@@ -207,26 +216,28 @@ func buildSigner(config *Config) (signer.Signer, error) { //nolint:ireturn // Pi
 	switch strings.ToLower(config.Backend) {
 	case "", "osslsigncode":
 		return backends.NewOSSLSigncode(&backends.OSSLConfig{
-			Command:      config.Command,
-			PKCS11Module: config.PKCS11Module,
-			CertFile:     config.CertFile,
-			KeyID:        config.KeyID,
-			PIN:          config.PIN,
-			TimestampURL: config.TimestampURL,
-			Digest:       config.Digest,
-			Name:         config.Name,
-			URL:          config.URL,
+			Command:       config.Command,
+			PKCS11Module:  config.PKCS11Module,
+			CertFile:      config.CertFile,
+			KeyID:         config.KeyID,
+			PIN:           config.PIN,
+			TimestampURL:  config.TimestampURL,
+			Digest:        config.Digest,
+			Name:          config.Name,
+			URL:           config.URL,
+			HealthCommand: config.HealthCommand,
 		}), nil
 	case "jsign":
 		return backends.NewJsign(&backends.JsignConfig{
-			Command:      config.Command,
-			Alias:        config.Alias,
-			CertFile:     config.CertFile,
-			PIN:          config.PIN,
-			TimestampURL: config.TimestampURL,
-			Digest:       config.Digest,
-			Name:         config.Name,
-			URL:          config.URL,
+			Command:       config.Command,
+			Alias:         config.Alias,
+			CertFile:      config.CertFile,
+			PIN:           config.PIN,
+			TimestampURL:  config.TimestampURL,
+			Digest:        config.Digest,
+			Name:          config.Name,
+			URL:           config.URL,
+			HealthCommand: config.HealthCommand,
 		}), nil
 	case "fake":
 		slog.Warn("using the FAKE signing backend; output files are not really signed")

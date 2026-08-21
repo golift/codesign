@@ -133,6 +133,10 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	select {
 	case err := <-errs:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil // Normal close is not a failure.
+		}
+
 		return fmt.Errorf("http server: %w", err)
 	case <-ctx.Done():
 	}
@@ -269,10 +273,7 @@ func (s *Server) sign(req *http.Request, body []byte, kind string) ([]byte, erro
 		URL:        req.Header.Get(codesign.HeaderURL),
 	}
 
-	s.signMu.Lock()
-	err = s.config.Signer.Sign(req.Context(), request)
-	s.signMu.Unlock()
-
+	err = s.signLocked(req.Context(), request)
 	if err != nil {
 		return nil, fmt.Errorf("backend: %w", err)
 	}
@@ -283,6 +284,16 @@ func (s *Server) sign(req *http.Request, body []byte, kind string) ([]byte, erro
 	}
 
 	return signed, nil
+}
+
+// signLocked serializes backend calls. The unlock is deferred so a panicking
+// backend cannot leave the mutex held and deadlock every later request.
+func (s *Server) signLocked(ctx context.Context, request *signer.Request) error {
+	s.signMu.Lock()
+	defer s.signMu.Unlock()
+
+	//nolint:wrapcheck // The caller wraps with backend context.
+	return s.config.Signer.Sign(ctx, request)
 }
 
 // isLoopback reports whether the peer address is 127.0.0.0/8 or ::1.
