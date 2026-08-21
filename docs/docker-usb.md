@@ -59,8 +59,10 @@ docker exec signerd osslsigncode --version
 curl -fsS http://127.0.0.1:8750/health   # from the host loopback publish
 ```
 
-By default `GET /health` runs a PIN-free `pkcs11-tool --list-objects --type cert`
-probe against `libykcs11.so`. Empty output or a nonzero exit is unhealthy
+By default `GET /health` first runs the signing tool (`osslsigncode --version`
+or `jsign --help`), then a PIN-free `pkcs11-tool --list-objects --type cert`
+probe against `pkcs11_module`. The probe must print `Certificate Object`;
+empty output, a heading with no certs, or a nonzero exit is unhealthy
 (unplugged token, wrong module). That lists *certificates on the module*, not
 a specific PIV slot — override `health_command` if you need to assert slot 9A
 or a certificate label:

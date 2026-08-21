@@ -31,6 +31,9 @@ pkcs11_module = "/usr/lib/x86_64-linux-gnu/libykcs11.so"
 # it next to the daemon, not in git.
 cert_file = "/etc/signerd/chain.pem"
 
+# PKCS#11 key URI for osslsigncode -key. Default is PIV slot 9A.
+#key_id = "pkcs11:id=%01"
+
 # jsign backend only: certificate alias on the token.
 #alias = "X.509 Certificate for PIV Authentication"
 
@@ -48,8 +51,9 @@ cert_file = "/etc/signerd/chain.pem"
 #url = "https://app.example.com"
 
 # Health-check command run by GET /health (program + args). The default is a
-# PIN-free pkcs11-tool certificate listing against pkcs11_module; empty
-# output means the token is absent. Override to assert a specific slot.
+# PIN-free pkcs11-tool certificate listing against pkcs11_module. Health also
+# runs the signing tool first; the probe must print "Certificate Object" or
+# it is treated as absent. Override to assert a specific slot or label.
 #health_command = [
 #  "pkcs11-tool",
 #  "--module", "/usr/lib/x86_64-linux-gnu/libykcs11.so",
