@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,8 +26,9 @@ const (
 // issuer is a fake OIDC issuer: an httptest server with a discovery document,
 // a JWKS containing one RSA key, and a helper to mint signed tokens.
 type issuer struct {
-	url string
-	key *rsa.PrivateKey
+	url      string
+	key      *rsa.PrivateKey
+	jwksHits atomic.Int32
 }
 
 func newIssuer(t *testing.T) *issuer {
@@ -41,6 +43,8 @@ func newIssuer(t *testing.T) *issuer {
 		_ = json.NewEncoder(resp).Encode(map[string]string{"jwks_uri": fake.url + "/jwks"})
 	})
 	mux.HandleFunc("/jwks", func(resp http.ResponseWriter, _ *http.Request) {
+		fake.jwksHits.Add(1)
+
 		_ = json.NewEncoder(resp).Encode(map[string]any{"keys": []map[string]string{{
 			"kty": "RSA",
 			"kid": testKeyID,
@@ -90,11 +94,12 @@ func TestVerify(t *testing.T) {
 	fake := newIssuer(t)
 
 	tests := []struct {
-		name      string
-		allowlist []string
-		keyID     string
-		mutate    func(jwt.MapClaims)
-		wantErr   error
+		name          string
+		allowlist     []string
+		keyID         string
+		emptyAudience bool
+		mutate        func(jwt.MapClaims)
+		wantErr       error
 	}{
 		{
 			name:      "valid token",
@@ -117,6 +122,13 @@ func TestVerify(t *testing.T) {
 			allowlist: nil,
 			keyID:     testKeyID,
 			wantErr:   oidc.ErrEmptyAllowlist,
+		},
+		{
+			name:          "empty audience fails closed",
+			allowlist:     []string{testRepo},
+			keyID:         testKeyID,
+			emptyAudience: true,
+			wantErr:       oidc.ErrNoAudience,
 		},
 		{
 			name:      "wrong audience",
@@ -171,9 +183,14 @@ func TestVerify(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
+			audience := testAudience
+			if test.emptyAudience {
+				audience = ""
+			}
+
 			verifier := oidc.New(&oidc.Config{
 				Issuer:              fake.url,
-				Audience:            testAudience,
+				Audience:            audience,
 				AllowedRepositories: test.allowlist,
 			})
 
@@ -232,6 +249,32 @@ func TestVerifyGarbage(t *testing.T) {
 
 	_, err := verifier.Verify(t.Context(), "not-a-token")
 	require.ErrorIs(t, err, jwt.ErrTokenMalformed)
+}
+
+// TestVerifyUnknownKeyIDRateLimited proves that attacker-controlled key IDs
+// cannot generate a JWKS fetch per token: after one fetch, unknown IDs are
+// rejected from cache until the refresh cooldown expires.
+func TestVerifyUnknownKeyIDRateLimited(t *testing.T) {
+	t.Parallel()
+
+	fake := newIssuer(t)
+	verifier := oidc.New(&oidc.Config{
+		Issuer:              fake.url,
+		Audience:            testAudience,
+		AllowedRepositories: []string{testRepo},
+	})
+
+	for range 5 {
+		_, err := verifier.Verify(t.Context(), fake.token(t, "bogus-kid", fake.claims()))
+		require.ErrorIs(t, err, oidc.ErrUnknownKeyID)
+	}
+
+	assert.Equal(t, int32(1), fake.jwksHits.Load(), "bogus key IDs must not trigger repeated JWKS fetches")
+
+	// A real token still verifies from the same fetch.
+	_, err := verifier.Verify(t.Context(), fake.token(t, testKeyID, fake.claims()))
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), fake.jwksHits.Load())
 }
 
 func TestNewDefaults(t *testing.T) {

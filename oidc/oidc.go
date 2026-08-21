@@ -28,18 +28,31 @@ const DefaultIssuer = "https://token.actions.githubusercontent.com"
 const (
 	// keyCacheTTL is how long fetched JWKS keys are trusted before a refresh.
 	keyCacheTTL = 10 * time.Minute
-	// fetchTimeout bounds one JWKS/discovery HTTP round trip.
+	// maxKeyStale is how long past the TTL cached keys remain usable while
+	// the issuer is unreachable. Beyond it, verification fails closed.
+	maxKeyStale = time.Hour
+	// refreshCooldown limits how often a JWKS refresh may be attempted.
+	// Token key IDs are attacker-controlled and the key lookup runs before
+	// signature validation, so refreshes must be rate-limited.
+	refreshCooldown = time.Minute
+	// fetchTimeout bounds one JWKS/discovery HTTP round trip, even when the
+	// caller supplies a client without its own timeout.
 	fetchTimeout = 10 * time.Second
 )
 
 // Errors returned by Verify, beyond signature/claim errors from the JWT library.
 var (
 	ErrEmptyAllowlist = errors.New("allowed repositories list is empty, refusing all tokens")
+	ErrNoAudience     = errors.New("no audience configured, refusing all tokens")
 	ErrRepoNotAllowed = errors.New("repository is not on the allowed repositories list")
 	ErrNoRepository   = errors.New("token has no repository claim")
 	ErrNoKeyID        = errors.New("token header has no key ID")
 	ErrUnknownKeyID   = errors.New("no issuer key matches the token key ID")
+	ErrStaleKeys      = errors.New("issuer keys are stale and cannot be refreshed yet")
 	ErrBadDiscovery   = errors.New("issuer discovery document has no jwks_uri")
+
+	// errCooldown is an internal signal that a refresh was rate-limited.
+	errCooldown = errors.New("JWKS refresh attempted too recently")
 )
 
 // Config controls token verification.
@@ -76,10 +89,11 @@ type Claims struct {
 // Verifier verifies GitHub Actions OIDC tokens. Create one with New.
 // It caches the issuer's JWKS and is safe for concurrent use.
 type Verifier struct {
-	config  Config
-	mu      sync.Mutex
-	keys    map[string]*rsa.PublicKey
-	fetched time.Time
+	config    Config
+	mu        sync.Mutex
+	keys      map[string]*rsa.PublicKey
+	fetched   time.Time // last successful JWKS fetch.
+	attempted time.Time // last JWKS fetch attempt, successful or not.
 }
 
 // New returns a Verifier for the provided configuration.
@@ -103,6 +117,12 @@ func New(config *Config) *Verifier {
 func (v *Verifier) Verify(ctx context.Context, token string) (*Claims, error) {
 	if len(v.config.AllowedRepositories) == 0 {
 		return nil, ErrEmptyAllowlist
+	}
+
+	// jwt.WithAudience skips validation when the expected value is empty,
+	// which would accept a token minted for any audience. Fail closed.
+	if v.config.Audience == "" {
+		return nil, ErrNoAudience
 	}
 
 	claims := &Claims{}
@@ -138,31 +158,60 @@ func (v *Verifier) Verify(ctx context.Context, token string) (*Claims, error) {
 	return claims, nil
 }
 
-// key returns the issuer public key with the provided ID, fetching or
-// refreshing the JWKS as needed.
+// key returns the issuer public key with the provided ID, refreshing the
+// JWKS when needed. Refreshes are rate-limited (key IDs arrive from the
+// network before any signature check), and cached keys stay usable for a
+// bounded window when the issuer is unreachable, after which verification
+// fails closed.
 func (v *Verifier) key(ctx context.Context, keyID string) (*rsa.PublicKey, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
-	if key, ok := v.keys[keyID]; ok && time.Since(v.fetched) < keyCacheTTL {
+	key, cached := v.keys[keyID]
+	if cached && time.Since(v.fetched) < keyCacheTTL {
 		return key, nil
 	}
 
-	err := v.fetchKeys(ctx)
-	if err != nil {
-		// Ride out a fetch blip when the key is already cached.
+	err := v.refresh(ctx)
+	if err == nil {
 		if key, ok := v.keys[keyID]; ok {
 			return key, nil
 		}
 
-		return nil, err
+		return nil, fmt.Errorf("%w: %s", ErrUnknownKeyID, keyID)
 	}
 
-	if key, ok := v.keys[keyID]; ok {
+	// Refresh failed or was rate-limited. Ride out a bounded issuer outage
+	// with the cached key, then fail closed.
+	if cached && time.Since(v.fetched) < keyCacheTTL+maxKeyStale {
 		return key, nil
 	}
 
-	return nil, fmt.Errorf("%w: %s", ErrUnknownKeyID, keyID)
+	if errors.Is(err, errCooldown) {
+		if cached {
+			return nil, ErrStaleKeys
+		}
+
+		return nil, fmt.Errorf("%w: %s", ErrUnknownKeyID, keyID)
+	}
+
+	return nil, err
+}
+
+// refresh fetches the JWKS unless an attempt already ran within the
+// cooldown. The caller must hold the mutex. The fetch is always bounded by
+// fetchTimeout, even when the configured HTTP client has no timeout.
+func (v *Verifier) refresh(ctx context.Context) error {
+	if time.Since(v.attempted) < refreshCooldown {
+		return errCooldown
+	}
+
+	v.attempted = time.Now()
+
+	fetchCtx, cancel := context.WithTimeout(ctx, fetchTimeout)
+	defer cancel()
+
+	return v.fetchKeys(fetchCtx)
 }
 
 // fetchKeys replaces the cached JWKS. The caller must hold the mutex.
