@@ -1,0 +1,284 @@
+package server_test
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"golift.io/codesign"
+	"golift.io/codesign/oidc"
+	"golift.io/codesign/server"
+	"golift.io/codesign/signer"
+)
+
+const (
+	remotePeer = "203.0.113.9:54321" // TEST-NET address: never loopback.
+	goodToken  = "good-token"
+	peBody     = "MZ this is a fake portable executable"
+)
+
+// stubVerifier accepts exactly one token.
+type stubVerifier struct{}
+
+var errBadToken = errors.New("token rejected by stub")
+
+func (stubVerifier) Verify(_ context.Context, token string) (*oidc.Claims, error) {
+	if token == goodToken {
+		return &oidc.Claims{Repository: "golift/codesign"}, nil
+	}
+
+	return nil, errBadToken
+}
+
+// newServer returns a handler wired to a Fake signer and the stub verifier.
+func newServer(t *testing.T, fake *signer.Fake) http.Handler {
+	t.Helper()
+
+	return server.New(&server.Config{
+		Signer:   fake,
+		Verifier: stubVerifier{},
+		MaxBody:  1024,
+		WorkDir:  t.TempDir(),
+	}).Handler()
+}
+
+// signRequest builds a POST /v1/sign request from the fake remote peer.
+func signRequest(ctx context.Context, body string, headers map[string]string) *http.Request {
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, codesign.SignPath, strings.NewReader(body))
+	req.RemoteAddr = remotePeer
+
+	for name, value := range headers {
+		req.Header.Set(name, value)
+	}
+
+	return req
+}
+
+func TestHealth(t *testing.T) {
+	t.Parallel()
+
+	fake := &signer.Fake{}
+	handler := newServer(t, fake)
+
+	recorder := httptest.NewRecorder()
+	healthReq := httptest.NewRequestWithContext(t.Context(), http.MethodGet, codesign.HealthPath, http.NoBody)
+	handler.ServeHTTP(recorder, healthReq)
+	assert.Equal(t, http.StatusOK, recorder.Code)
+	assert.Equal(t, "OK\n", recorder.Body.String())
+
+	fake.HealthErr = errors.New("token unplugged")
+	recorder = httptest.NewRecorder()
+	healthReq = httptest.NewRequestWithContext(t.Context(), http.MethodGet, codesign.HealthPath, http.NoBody)
+	handler.ServeHTTP(recorder, healthReq)
+	assert.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), "token unplugged")
+}
+
+func TestSignWithToken(t *testing.T) {
+	t.Parallel()
+
+	fake := &signer.Fake{}
+	handler := newServer(t, fake)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, signRequest(t.Context(), peBody, map[string]string{
+		"Authorization":         "Bearer " + goodToken,
+		codesign.HeaderFilename: "notifiarr.amd64.exe",
+		codesign.HeaderName:     "Notifiarr",
+		codesign.HeaderURL:      "https://notifiarr.com",
+		"Content-Type":          "application/octet-stream",
+	}))
+
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	assert.True(t, strings.HasPrefix(recorder.Body.String(), peBody), "response starts with the input")
+	assert.True(t, strings.HasSuffix(recorder.Body.String(), signer.FakeMarker), "response was signed")
+
+	requests := fake.Requests()
+	require.Len(t, requests, 1)
+	assert.Equal(t, "Notifiarr", requests[0].Name)
+	assert.Equal(t, "https://notifiarr.com", requests[0].URL)
+	assert.True(t, strings.HasSuffix(requests[0].InputPath, ".exe"), "temp file keeps the .exe extension")
+}
+
+func TestSignLoopbackSkipsAuth(t *testing.T) {
+	t.Parallel()
+
+	fake := &signer.Fake{}
+	handler := newServer(t, fake)
+
+	req := signRequest(t.Context(), peBody, nil)
+	req.RemoteAddr = "127.0.0.1:9999"
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	assert.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+
+	req = signRequest(t.Context(), peBody, nil)
+	req.RemoteAddr = "[::1]:9999"
+
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	assert.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+}
+
+func TestSignAuthFailures(t *testing.T) {
+	t.Parallel()
+
+	fake := &signer.Fake{}
+	handler := newServer(t, fake)
+
+	tests := []struct {
+		name    string
+		headers map[string]string
+	}{
+		{name: "no token"},
+		{
+			name:    "bad token",
+			headers: map[string]string{"Authorization": "Bearer nope"},
+		},
+		{
+			name:    "empty bearer",
+			headers: map[string]string{"Authorization": "Bearer "},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, signRequest(t.Context(), peBody, test.headers))
+			assert.Equal(t, http.StatusUnauthorized, recorder.Code)
+		})
+	}
+
+	assert.Empty(t, fake.Requests(), "nothing may reach the signer without auth")
+}
+
+func TestSignNoVerifierFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	fake := &signer.Fake{}
+	handler := server.New(&server.Config{Signer: fake, WorkDir: t.TempDir()}).Handler()
+
+	recorder := httptest.NewRecorder()
+	authed := signRequest(t.Context(), peBody, map[string]string{"Authorization": "Bearer " + goodToken})
+	handler.ServeHTTP(recorder, authed)
+	assert.Equal(t, http.StatusUnauthorized, recorder.Code)
+	assert.Empty(t, fake.Requests())
+}
+
+func TestSignRejectsBadMagic(t *testing.T) {
+	t.Parallel()
+
+	handler := newServer(t, &signer.Fake{})
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, signRequest(t.Context(), "#!/bin/sh\necho not windows\n", map[string]string{
+		"Authorization": "Bearer " + goodToken,
+	}))
+	assert.Equal(t, http.StatusUnsupportedMediaType, recorder.Code)
+}
+
+func TestSignRejectsOversizedBody(t *testing.T) {
+	t.Parallel()
+
+	handler := newServer(t, &signer.Fake{}) // MaxBody is 1024 in newServer.
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, signRequest(t.Context(), "MZ"+strings.Repeat("x", 2048), map[string]string{
+		"Authorization": "Bearer " + goodToken,
+	}))
+	assert.Equal(t, http.StatusRequestEntityTooLarge, recorder.Code)
+}
+
+func TestSignBackendFailure(t *testing.T) {
+	t.Parallel()
+
+	fake := &signer.Fake{SignErr: errors.New("pcscd lost the token")}
+	handler := newServer(t, fake)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, signRequest(t.Context(), peBody, map[string]string{
+		"Authorization": "Bearer " + goodToken,
+	}))
+	assert.Equal(t, http.StatusInternalServerError, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), "pcscd lost the token")
+}
+
+func TestSignMSIMagic(t *testing.T) {
+	t.Parallel()
+
+	fake := &signer.Fake{}
+	handler := newServer(t, fake)
+
+	msi := string([]byte{0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1}) + " fake msi"
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, signRequest(t.Context(), msi, map[string]string{
+		"Authorization": "Bearer " + goodToken,
+	}))
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+
+	requests := fake.Requests()
+	require.Len(t, requests, 1)
+	assert.True(t, strings.HasSuffix(requests[0].InputPath, ".msi"), "MSI uploads get a .msi temp file")
+}
+
+func TestSignSanitizesEvilFilename(t *testing.T) {
+	t.Parallel()
+
+	fake := &signer.Fake{}
+	handler := newServer(t, fake)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, signRequest(t.Context(), peBody, map[string]string{
+		"Authorization":         "Bearer " + goodToken,
+		codesign.HeaderFilename: "../../../etc/passwd.EVIL~$",
+	}))
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+
+	requests := fake.Requests()
+	require.Len(t, requests, 1)
+	assert.True(t, strings.HasSuffix(requests[0].InputPath, ".exe"),
+		"weird extensions fall back to the magic-derived one, got %s", requests[0].InputPath)
+	assert.NotContains(t, requests[0].InputPath, "..")
+}
+
+func TestServeAndShutdown(t *testing.T) {
+	t.Parallel()
+
+	daemon := server.New(&server.Config{
+		Addr:    "127.0.0.1:0",
+		Signer:  &signer.Fake{},
+		WorkDir: t.TempDir(),
+	})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+
+	go func() {
+		done <- daemon.Serve(ctx)
+	}()
+
+	cancel()
+	require.NoError(t, <-done)
+}
+
+func TestGetSignNotAllowed(t *testing.T) {
+	t.Parallel()
+
+	handler := newServer(t, &signer.Fake{})
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, codesign.SignPath, bytes.NewReader(nil))
+	req.RemoteAddr = remotePeer
+	handler.ServeHTTP(recorder, req)
+	assert.Equal(t, http.StatusMethodNotAllowed, recorder.Code)
+}
