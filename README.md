@@ -22,9 +22,41 @@ Remote requests are protected by **two required gates**:
 Local/operator signing uses an SSH tunnel to the daemon's loopback bind; see
 `docs/` once published.
 
+## GitHub Action
+
+Sign release artifacts from a workflow. The job **must** grant
+`id-token: write` or the signing service will reject the request with 401.
+
+```yaml
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # REQUIRED: lets the action fetch a GitHub OIDC token.
+    steps:
+      - uses: actions/checkout@v5
+      # ... build your Windows binaries ...
+      - uses: golift/codesign@v1
+        with:
+          files: |
+            dist/*.exe
+            dist/*.msi
+          url: ${{ secrets.CODESIGN_URL }}
+          client-cert: ${{ secrets.CODESIGN_CLIENT_CERT }}
+          client-key: ${{ secrets.CODESIGN_CLIENT_KEY }}
+          name: My Application
+          website: https://app.example.com
+```
+
+Files are replaced in place with their signed versions. The service operator
+must add your `Owner/repo` to the daemon's `allowed_repositories` list, and
+your client certificate must chain to the CA that the operator's proxy
+verifies. See `docs/` for the server side.
+
 ## Status
 
-Under construction. Nothing to install yet.
+Under construction; a `v1.0.0` release plants the floating `v1` tag.
 
 -   [GoDoc](https://pkg.go.dev/golift.io/codesign)
 -   MIT licensed.
