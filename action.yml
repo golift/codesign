@@ -22,12 +22,10 @@ inputs:
     required: true
   client-cert:
     description: mTLS client certificate, inline PEM. Store in a secret.
-    required: false
-    default: ''
+    required: true
   client-key:
     description: mTLS client private key, inline PEM. Store in a secret.
-    required: false
-    default: ''
+    required: true
   ca-cert:
     description: CA certificate that signed the server cert, inline PEM, if not publicly trusted.
     required: false
