@@ -7,7 +7,10 @@ before:
 # Two small CGO-free binaries. signerd runs on the box with the YubiKey
 # (Linux/unRAID/Docker or a Mac); codesign runs on CI runners and laptops.
 # No Windows signerd on purpose, and these artifacts are NOT
-# Authenticode-signed in v1 (chicken and egg).
+# Authenticode-signed in v1 (chicken and egg). checksums.txt is signed
+# keyless with cosign (Sigstore). The Docker image is a second build of
+# the same commit (needs debian+pcscd); stamps use the git commit time so
+# tarball and image version strings match.
 builds:
   - id: signerd
     main: ./cmd/signerd
@@ -20,10 +23,11 @@ builds:
     goarch:
       - amd64
       - arm64
+    mod_timestamp: '{{ .CommitTimestamp }}'
     ldflags:
       - -s -w
       - -X "golift.io/version.Version={{.Version}}"
-      - -X "golift.io/version.BuildDate={{.Date}}"
+      - -X "golift.io/version.BuildDate={{.CommitDate}}"
       - -X "golift.io/version.Revision={{.FullCommit}}"
       - -X "golift.io/version.Branch={{.ShortCommit}} [{{.Branch}}]"
   - id: codesign
@@ -37,10 +41,11 @@ builds:
     goarch:
       - amd64
       - arm64
+    mod_timestamp: '{{ .CommitTimestamp }}'
     ldflags:
       - -s -w
       - -X "golift.io/version.Version={{.Version}}"
-      - -X "golift.io/version.BuildDate={{.Date}}"
+      - -X "golift.io/version.BuildDate={{.CommitDate}}"
       - -X "golift.io/version.Revision={{.FullCommit}}"
       - -X "golift.io/version.Branch={{.ShortCommit}} [{{.Branch}}]"
 
@@ -62,6 +67,20 @@ archives:
 
 checksum:
   name_template: checksums.txt
+
+# Keyless Sigstore signatures over checksums.txt. Verify with:
+#   cosign verify-blob --signature checksums.txt.sig --certificate checksums.txt.pem checksums.txt
+signs:
+  - cmd: cosign
+    certificate: '${artifact}.pem'
+    args:
+      - sign-blob
+      - '--output-certificate=${certificate}'
+      - '--output-signature=${signature}'
+      - '${artifact}'
+      - '--yes'
+    artifacts: checksum
+    output: true
 
 changelog:
   sort: asc

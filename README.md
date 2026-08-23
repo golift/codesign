@@ -45,6 +45,11 @@ jobs:
           website: https://app.example.com
 ```
 
+`@v1` tracks a floating tag and silently picks up new Action code. Pin by
+commit SHA (`uses: golift/codesign@<sha>`) when you need a frozen install;
+that is also why release checksums are cosign-signed and the image ships
+SLSA provenance.
+
 Files are replaced in place. The operator must allowlist your `Owner/repo`
 and issue a client certificate that chains to the proxy CA. Server-side docs:
 

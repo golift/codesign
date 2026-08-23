@@ -4,7 +4,7 @@
 # same token (exclusive PC/SC access; pick one owner). Pass the YubiKey CCID
 # interface in with --device; see docs/docker-usb.md for finding it safely.
 
-FROM golang:1.27 AS build
+FROM golang:1.25.7@sha256:5a79b94c34c299ac0361fbb7c7fca6dc552e166b42341050323fa3ab137d7be9 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -26,7 +26,7 @@ RUN CGO_ENABLED=0 go build -ldflags "-s -w \
         -X golift.io/version.Branch=${BRANCH}" \
         -o /out/codesign ./cmd/codesign
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241
 
 # pcscd needs root to open the USB CCID device. signerd does not: it talks
 # to pcscd over /run/pcscd/pcscd.comm, so the entrypoint drops to the
