@@ -55,7 +55,7 @@ runs:
     - name: setup-go
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
-        go-version: stable
+        go-version-file: ${{ github.action_path }}/go.mod
         cache: false
     - name: install-codesign
       shell: bash
@@ -68,7 +68,9 @@ runs:
         if [ -n "${CODESIGN_VERSION}" ]; then
           go install "golift.io/codesign/cmd/codesign@${CODESIGN_VERSION}"
         else
-          go install "${GITHUB_ACTION_PATH}/cmd/codesign"
+          # -C selects the action's module; go install PATH/cmd/foo uses the
+          # caller CWD and fails in consumer repos ("outside main module").
+          go install -C "${GITHUB_ACTION_PATH}" ./cmd/codesign
         fi
     - name: sign-files
       shell: bash
@@ -87,5 +89,6 @@ runs:
       # `--` stops the Go flag parser treating a file named -url as an option.
       run: |
         set -euo pipefail
+        shopt -s failglob
         # shellcheck disable=SC2086
         "${GOBIN}/codesign" -- $CODESIGN_FILES
