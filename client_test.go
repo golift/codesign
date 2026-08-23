@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -216,6 +217,23 @@ func TestSignDoesNotRetryAuthFailures(t *testing.T) {
 	assert.Equal(t, int32(1), attempts.Load(), "4xx responses must not retry")
 }
 
+func TestSignErrorBodyIsCapped(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(resp http.ResponseWriter, _ *http.Request) {
+		http.Error(resp, strings.Repeat("x", 64<<10), http.StatusUnauthorized)
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := codesign.New(&codesign.Config{URL: server.URL})
+	require.NoError(t, err)
+
+	_, err = client.Sign(t.Context(), "app.exe", []byte("MZ"), nil)
+	require.Error(t, err)
+	assert.Less(t, len(err.Error()), 8<<10, "error bodies must not be copied unbounded")
+	assert.NotContains(t, err.Error(), strings.Repeat("x", 8<<10))
+}
+
 func TestHealth(t *testing.T) {
 	t.Parallel()
 
@@ -298,6 +316,22 @@ func TestFetchGitHubToken(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", server.URL+"/?api-version=2")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "runtime-token")
+
+	token, err := codesign.FetchGitHubToken(t.Context(), "https://sign.example.com")
+	require.NoError(t, err)
+	assert.Equal(t, "the-oidc-jwt", token)
+}
+
+func TestFetchGitHubTokenWithoutExistingQuery(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(resp http.ResponseWriter, req *http.Request) {
+		assert.Equal(t, "https://sign.example.com", req.URL.Query().Get("audience"))
+
+		_ = json.NewEncoder(resp).Encode(map[string]string{"value": "the-oidc-jwt"})
+	}))
+	t.Cleanup(server.Close)
+
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", server.URL)
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "runtime-token")
 
 	token, err := codesign.FetchGitHubToken(t.Context(), "https://sign.example.com")

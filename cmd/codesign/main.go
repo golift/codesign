@@ -20,7 +20,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"golift.io/codesign"
@@ -93,7 +95,8 @@ func run() error {
 		return nil
 	}
 
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	client, err := buildClient(ctx, opts, !opts.health)
 	if err != nil {

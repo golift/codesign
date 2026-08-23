@@ -24,6 +24,8 @@ const (
 	DefaultTimeout = 5 * time.Minute
 	// retryDelay separates retry attempts.
 	retryDelay = 5 * time.Second
+	// maxErrorBody caps how much of a non-200 response is copied into an error.
+	maxErrorBody = 4 << 10
 )
 
 // Errors returned by the client.
@@ -145,9 +147,7 @@ func (c *Client) Health(ctx context.Context) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-
-		return fmt.Errorf("%w: %s: %s", errSignFailed, resp.Status, strings.TrimSpace(string(body)))
+		return fmt.Errorf("%w: %s: %s", errSignFailed, resp.Status, readErrorBody(resp.Body))
 	}
 
 	return nil
@@ -305,12 +305,11 @@ func (c *Client) signOnce(
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
 		gateway := resp.StatusCode == http.StatusBadGateway ||
 			resp.StatusCode == http.StatusServiceUnavailable ||
 			resp.StatusCode == http.StatusGatewayTimeout
 
-		return nil, gateway, fmt.Errorf("%w: %s: %s", errSignFailed, resp.Status, strings.TrimSpace(string(body)))
+		return nil, gateway, fmt.Errorf("%w: %s: %s", errSignFailed, resp.Status, readErrorBody(resp.Body))
 	}
 
 	signed, err := io.ReadAll(resp.Body)
@@ -332,9 +331,17 @@ func FetchGitHubToken(ctx context.Context, audience string) (string, error) {
 		return "", ErrNoActionsOIDC
 	}
 
+	parsed, err := url.Parse(requestURL)
+	if err != nil {
+		return "", fmt.Errorf("parsing Actions OIDC URL: %w", err)
+	}
+
+	query := parsed.Query()
+	query.Set("audience", audience)
+	parsed.RawQuery = query.Encode()
+
 	// The URL comes from the GitHub Actions runtime environment on purpose.
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, //nolint:gosec
-		requestURL+"&audience="+url.QueryEscape(audience), http.NoBody)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), http.NoBody) //nolint:gosec
 	if err != nil {
 		return "", fmt.Errorf("creating request: %w", err)
 	}
@@ -348,9 +355,7 @@ func FetchGitHubToken(ctx context.Context, audience string) (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-
-		return "", fmt.Errorf("%w: %s: %s", errSignFailed, resp.Status, strings.TrimSpace(string(body)))
+		return "", fmt.Errorf("%w: %s: %s", errSignFailed, resp.Status, readErrorBody(resp.Body))
 	}
 
 	token := struct {
@@ -493,4 +498,16 @@ func loadPEM(value string) ([]byte, error) {
 	}
 
 	return data, nil
+}
+
+// readErrorBody copies a bounded prefix of a non-200 response into an error
+// string so a hostile or misbehaving daemon cannot force the client to buffer
+// an arbitrarily large body.
+func readErrorBody(body io.Reader) string {
+	data, _ := io.ReadAll(io.LimitReader(body, maxErrorBody+1))
+	if len(data) > maxErrorBody {
+		data = data[:maxErrorBody]
+	}
+
+	return strings.TrimSpace(string(data))
 }
