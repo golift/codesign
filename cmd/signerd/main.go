@@ -113,6 +113,11 @@ func run() error {
 		return err
 	}
 
+	err = validateConfig(config)
+	if err != nil {
+		return err
+	}
+
 	backend, err := buildSigner(config)
 	if err != nil {
 		return err
@@ -209,7 +214,90 @@ func findConfigFile() string {
 }
 
 // errUnknownBackend rejects a backend name that is not compiled in.
-var errUnknownBackend = errors.New("unknown backend, want osslsigncode, jsign, or fake")
+var (
+	errUnknownBackend = errors.New("unknown backend, want osslsigncode, jsign, or fake")
+	errNoPKCS11Module = errors.New("pkcs11_module is required")
+	errNoCertFile     = errors.New("cert_file is required")
+	errNoJsignProbe   = errors.New("jsign backend needs pkcs11_module or health_command")
+	errFakeDisabled   = errors.New("fake backend requires SIGNERD_ALLOW_FAKE=1")
+)
+
+const allowFakeEnv = "SIGNERD_ALLOW_FAKE"
+
+func requireFile(path, field string) error {
+	_, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("%s %s: %w", field, path, err)
+	}
+
+	return nil
+}
+
+// validateConfig fails closed before the daemon listens: signing backends
+// need their module and certificate chain on disk. The PIN is optional at
+// start (health must not need it) but missing PIN is logged.
+func validateConfig(config *Config) error {
+	if config.PIN == "" && !strings.EqualFold(config.Backend, "fake") {
+		slog.Warn("no PIN configured; signing will fail until SIGNERD_PIN or pin_file is set")
+	}
+
+	switch strings.ToLower(config.Backend) {
+	case "", "osslsigncode":
+		return validateOSSL(config)
+	case "jsign":
+		return validateJsign(config)
+	case "fake":
+		return validateFake()
+	default:
+		return fmt.Errorf("%w: %s", errUnknownBackend, config.Backend)
+	}
+}
+
+func validateOSSL(config *Config) error {
+	if config.PKCS11Module == "" {
+		return errNoPKCS11Module
+	}
+
+	err := requireFile(config.PKCS11Module, "pkcs11_module")
+	if err != nil {
+		return err
+	}
+
+	if config.CertFile == "" {
+		return errNoCertFile
+	}
+
+	return requireFile(config.CertFile, "cert_file")
+}
+
+func validateJsign(config *Config) error {
+	if config.CertFile == "" {
+		return errNoCertFile
+	}
+
+	err := requireFile(config.CertFile, "cert_file")
+	if err != nil {
+		return err
+	}
+
+	if config.PKCS11Module == "" && len(config.HealthCommand) == 0 {
+		return errNoJsignProbe
+	}
+
+	if config.PKCS11Module != "" {
+		return requireFile(config.PKCS11Module, "pkcs11_module")
+	}
+
+	return nil
+}
+
+func validateFake() error {
+	if os.Getenv(allowFakeEnv) != "1" {
+		return errFakeDisabled
+	}
+
+	return nil
+}
 
 // buildSigner turns the configuration into a signing backend.
 func buildSigner(config *Config) (signer.Signer, error) { //nolint:ireturn // Picking a backend at runtime is the point.
@@ -237,9 +325,14 @@ func buildSigner(config *Config) (signer.Signer, error) { //nolint:ireturn // Pi
 			Digest:        config.Digest,
 			Name:          config.Name,
 			URL:           config.URL,
+			PKCS11Module:  config.PKCS11Module,
 			HealthCommand: config.HealthCommand,
 		}), nil
 	case "fake":
+		if os.Getenv(allowFakeEnv) != "1" {
+			return nil, errFakeDisabled
+		}
+
 		slog.Warn("using the FAKE signing backend; output files are not really signed")
 
 		return &signer.Fake{}, nil

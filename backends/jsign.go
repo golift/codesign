@@ -157,3 +157,8 @@ func (s *Jsign) Health(ctx context.Context) error {
 
 	return nil
 }
+
+// HealthCommand returns a copy of the PIN-free probe argv Health will run.
+func (s *Jsign) HealthCommand() []string {
+	return slices.Clone(s.config.HealthCommand)
+}

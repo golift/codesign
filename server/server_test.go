@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -312,4 +314,132 @@ func TestGetSignNotAllowed(t *testing.T) {
 	req.RemoteAddr = remotePeer
 	handler.ServeHTTP(recorder, req)
 	assert.Equal(t, http.StatusMethodNotAllowed, recorder.Code)
+}
+
+func TestNewNilConfig(t *testing.T) {
+	t.Parallel()
+
+	require.NotNil(t, server.New(nil))
+}
+
+func TestSignRejectsBadMetadata(t *testing.T) {
+	t.Parallel()
+
+	tooLong := strings.Repeat("n", 257)
+
+	tests := []struct {
+		name    string
+		headers map[string]string
+	}{
+		{
+			name: "nul in name",
+			headers: map[string]string{
+				"Authorization":     "Bearer " + goodToken,
+				codesign.HeaderName: "app\x00hidden",
+			},
+		},
+		{
+			name: "newline in url",
+			headers: map[string]string{
+				"Authorization":    "Bearer " + goodToken,
+				codesign.HeaderURL: "https://example.com\nX-Injected: 1",
+			},
+		},
+		{
+			name: "too long",
+			headers: map[string]string{
+				"Authorization":     "Bearer " + goodToken,
+				codesign.HeaderName: tooLong,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			handler := newServer(t, &signer.Fake{})
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, signRequest(t.Context(), peBody, test.headers))
+			assert.Equal(t, http.StatusBadRequest, recorder.Code)
+		})
+	}
+}
+
+type blockingHealth struct {
+	signer.Fake
+}
+
+func (b *blockingHealth) Health(ctx context.Context) error {
+	<-ctx.Done()
+
+	return fmt.Errorf("health blocked: %w", ctx.Err())
+}
+
+func TestHealthTimeout(t *testing.T) {
+	t.Parallel()
+
+	handler := server.New(&server.Config{
+		Signer:        &blockingHealth{},
+		Verifier:      stubVerifier{},
+		WorkDir:       t.TempDir(),
+		HealthTimeout: 50 * time.Millisecond,
+	}).Handler()
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, codesign.HealthPath, http.NoBody)
+	handler.ServeHTTP(recorder, req)
+	assert.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	assert.Equal(t, "unhealthy\n", recorder.Body.String())
+}
+
+type holdingSign struct {
+	signer.Fake
+
+	started chan struct{}
+	release chan struct{}
+}
+
+func (h *holdingSign) Sign(ctx context.Context, req *signer.Request) error {
+	close(h.started)
+	<-h.release
+
+	err := h.Fake.Sign(ctx, req)
+	if err != nil {
+		return fmt.Errorf("holding sign: %w", err)
+	}
+
+	return nil
+}
+
+func TestHealthTimesOutWaitingForSign(t *testing.T) {
+	t.Parallel()
+
+	hold := &holdingSign{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	handler := server.New(&server.Config{
+		Signer:        hold,
+		Verifier:      stubVerifier{},
+		WorkDir:       t.TempDir(),
+		MaxBody:       1024,
+		HealthTimeout: 50 * time.Millisecond,
+	}).Handler()
+
+	go func() {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, signRequest(t.Context(), peBody, map[string]string{
+			"Authorization": "Bearer " + goodToken,
+		}))
+	}()
+
+	<-hold.started
+
+	recorder := httptest.NewRecorder()
+	healthReq := httptest.NewRequestWithContext(t.Context(), http.MethodGet, codesign.HealthPath, http.NoBody)
+	handler.ServeHTTP(recorder, healthReq)
+	assert.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+
+	close(hold.release)
 }

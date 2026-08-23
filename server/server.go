@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +46,12 @@ const (
 	// at a time; extras would otherwise each retain up to MaxBody on disk
 	// (and previously in memory) while waiting on the token.
 	maxInFlightUploads = 2
+	// healthWait bounds GET /health, including waiting on an in-flight sign.
+	// Unauthenticated probes must not hold the token mutex indefinitely.
+	healthWait = 15 * time.Second
+	// maxMetadata is the longest Authenticode name or URL accepted from a
+	// request header (and then passed as a single tool argument).
+	maxMetadata = 256
 )
 
 var (
@@ -55,8 +62,9 @@ var (
 	ErrNoToken = errors.New("missing Authorization bearer token")
 	// errNotSignable rejects uploads that are not PE or MSI files.
 	errNotSignable = errors.New("request body is not a PE or MSI file")
-	// errBusy rejects a sign request when too many uploads are already in flight.
-	errBusy = errors.New("too many signing requests in flight")
+	// errBadMetadata rejects Authenticode name/URL headers that cannot be
+	// passed safely to the signing tool.
+	errBadMetadata = errors.New("authenticode name or url is invalid")
 )
 
 // Verifier validates a GitHub Actions OIDC bearer token. *oidc.Verifier
@@ -81,6 +89,9 @@ type Config struct {
 	WorkDir string
 	// Logger defaults to slog.Default().
 	Logger *slog.Logger
+	// HealthTimeout bounds GET /health, including waiting for the token
+	// mutex. Defaults to 15s. Tests may set a shorter value.
+	HealthTimeout time.Duration
 }
 
 // Server is the signerd HTTP daemon. Create one with New.
@@ -91,8 +102,12 @@ type Server struct {
 	web     *http.Server
 }
 
-// New returns a Server with defaults applied.
+// New returns a Server with defaults applied. A nil config gets pure defaults.
 func New(config *Config) *Server {
+	if config == nil {
+		config = &Config{}
+	}
+
 	server := &Server{
 		config:  *config,
 		uploads: make(chan struct{}, maxInFlightUploads),
@@ -112,6 +127,10 @@ func New(config *Config) *Server {
 
 	if server.config.Logger == nil {
 		server.config.Logger = slog.Default()
+	}
+
+	if server.config.HealthTimeout == 0 {
+		server.config.HealthTimeout = healthWait
 	}
 
 	mux := http.NewServeMux()
@@ -170,7 +189,10 @@ func (s *Server) Serve(ctx context.Context) error {
 // no authentication and never touches the PIN. Details stay in the log:
 // this endpoint is unauthenticated.
 func (s *Server) handleHealth(resp http.ResponseWriter, req *http.Request) {
-	err := s.withToken(req.Context(), func(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(req.Context(), s.config.HealthTimeout)
+	defer cancel()
+
+	err := s.withToken(ctx, func(ctx context.Context) error {
 		return s.config.Signer.Health(ctx)
 	})
 	if err != nil {
@@ -207,7 +229,7 @@ func (s *Server) handleSign(resp http.ResponseWriter, req *http.Request) {
 
 	filename := req.Header.Get(codesign.HeaderFilename)
 
-	signed, size, err := s.signUpload(resp, req)
+	size, err := s.signUpload(resp, req)
 	if err != nil {
 		s.replySignError(resp, req, caller, err)
 
@@ -220,9 +242,6 @@ func (s *Server) handleSign(resp http.ResponseWriter, req *http.Request) {
 		"filename", filename,
 		"bytes", size,
 		"elapsed", time.Since(start).Round(time.Millisecond))
-
-	resp.Header().Set("Content-Type", "application/octet-stream")
-	_, _ = resp.Write(signed)
 }
 
 // replySignError maps a signing failure to an HTTP status without leaking
@@ -238,9 +257,9 @@ func (s *Server) replySignError(resp http.ResponseWriter, req *http.Request, cal
 	case errors.As(err, new(*http.MaxBytesError)):
 		status = http.StatusRequestEntityTooLarge
 		message = "request body too large"
-	case errors.Is(err, errBusy):
-		status = http.StatusServiceUnavailable
-		message = errBusy.Error()
+	case errors.Is(err, errBadMetadata):
+		status = http.StatusBadRequest
+		message = errBadMetadata.Error()
 	default:
 		s.config.Logger.Error("signing failed", "remote", req.RemoteAddr, "caller", caller, "error", err)
 	}
@@ -280,11 +299,11 @@ func (s *Server) authenticate(req *http.Request) (string, error) {
 }
 
 // signUpload streams the body to a temp file, checks PE/MSI magic, runs the
-// backend under the token mutex, and returns the signed bytes.
-func (s *Server) signUpload(resp http.ResponseWriter, req *http.Request) ([]byte, int64, error) {
+// backend under the token mutex, and copies the signed file to the response.
+func (s *Server) signUpload(resp http.ResponseWriter, req *http.Request) (int64, error) {
 	dir, err := os.MkdirTemp(s.config.WorkDir, "signerd-*")
 	if err != nil {
-		return nil, 0, fmt.Errorf("creating temp dir: %w", err)
+		return 0, fmt.Errorf("creating temp dir: %w", err)
 	}
 	defer os.RemoveAll(dir)
 
@@ -292,21 +311,21 @@ func (s *Server) signUpload(resp http.ResponseWriter, req *http.Request) ([]byte
 
 	file, err := os.OpenFile(upload, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600) //nolint:mnd
 	if err != nil {
-		return nil, 0, fmt.Errorf("creating upload file: %w", err)
+		return 0, fmt.Errorf("creating upload file: %w", err)
 	}
 
 	size, err := io.Copy(file, http.MaxBytesReader(resp, req.Body, s.config.MaxBody))
 	if err != nil {
 		_ = file.Close()
 
-		return nil, 0, fmt.Errorf("reading request body: %w", err)
+		return 0, fmt.Errorf("reading request body: %w", err)
 	}
 
 	kind, err := detectKind(file)
 	_ = file.Close()
 
 	if err != nil {
-		return nil, 0, err
+		return 0, err
 	}
 
 	ext := safeExtension(req.Header.Get(codesign.HeaderFilename), kind)
@@ -315,48 +334,120 @@ func (s *Server) signUpload(resp http.ResponseWriter, req *http.Request) ([]byte
 
 	err = os.Rename(upload, input)
 	if err != nil {
-		return nil, 0, fmt.Errorf("naming temp file: %w", err)
+		return 0, fmt.Errorf("naming temp file: %w", err)
 	}
 
-	request := &signer.Request{
-		InputPath:  input,
-		OutputPath: output,
-		Name:       req.Header.Get(codesign.HeaderName),
-		URL:        req.Header.Get(codesign.HeaderURL),
+	request, err := signingRequest(input, output, req)
+	if err != nil {
+		return 0, err
 	}
 
 	err = s.withToken(req.Context(), func(ctx context.Context) error {
 		return s.config.Signer.Sign(ctx, request)
 	})
 	if err != nil {
-		return nil, 0, fmt.Errorf("backend: %w", err)
+		return 0, fmt.Errorf("backend: %w", err)
 	}
 
-	signed, err := os.ReadFile(output)
+	err = writeSigned(resp, output)
 	if err != nil {
-		return nil, 0, fmt.Errorf("reading signed file: %w", err)
+		return 0, err
 	}
 
-	return signed, size, nil
+	return size, nil
 }
 
-// withToken serializes hardware-token operations (sign and health). The
-// unlock is deferred so a panicking backend cannot deadlock the daemon.
-func (s *Server) withToken(ctx context.Context, operation func(context.Context) error) error {
-	s.signMu.Lock()
-	defer s.signMu.Unlock()
-
-	err := ctx.Err()
+func signingRequest(input, output string, req *http.Request) (*signer.Request, error) {
+	name, err := sanitizeMetadata(req.Header.Get(codesign.HeaderName))
 	if err != nil {
-		return fmt.Errorf("token operation canceled: %w", err)
+		return nil, err
 	}
 
-	err = operation(ctx)
+	page, err := sanitizeMetadata(req.Header.Get(codesign.HeaderURL))
 	if err != nil {
-		return err
+		return nil, err
+	}
+
+	return &signer.Request{
+		InputPath:  input,
+		OutputPath: output,
+		Name:       name,
+		URL:        page,
+	}, nil
+}
+
+func writeSigned(resp http.ResponseWriter, path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("opening signed file: %w", err)
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("statting signed file: %w", err)
+	}
+
+	resp.Header().Set("Content-Type", "application/octet-stream")
+	resp.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
+
+	_, err = io.Copy(resp, file)
+	if err != nil {
+		return fmt.Errorf("writing signed file: %w", err)
 	}
 
 	return nil
+}
+
+// withToken serializes hardware-token operations (sign and health). The lock
+// wait respects ctx so a timed-out health probe cannot sit behind a sign
+// forever. Unlock is deferred so a panicking backend cannot deadlock the daemon.
+func (s *Server) withToken(ctx context.Context, operation func(context.Context) error) error {
+	acquired := make(chan struct{})
+
+	go func() {
+		s.signMu.Lock()
+
+		select {
+		case acquired <- struct{}{}:
+		case <-ctx.Done():
+			s.signMu.Unlock()
+		}
+	}()
+
+	select {
+	case <-acquired:
+		defer s.signMu.Unlock()
+
+		err := ctx.Err()
+		if err != nil {
+			return fmt.Errorf("token operation canceled: %w", err)
+		}
+
+		err = operation(ctx)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("token operation canceled: %w", ctx.Err())
+	}
+}
+
+// sanitizeMetadata trims Authenticode name/URL headers and rejects values
+// that are unsafe to pass as a signing-tool argument.
+func sanitizeMetadata(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+
+	if len(value) > maxMetadata || strings.ContainsAny(value, "\x00\r\n") {
+		return "", errBadMetadata
+	}
+
+	return value, nil
 }
 
 // isLoopback reports whether the peer address is 127.0.0.0/8 or ::1.
