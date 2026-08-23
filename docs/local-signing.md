@@ -1,5 +1,7 @@
 # Operator local signing (laptop builds, key on the server)
 
+v1 is GitHub Actions; this path is unsupported and may not work through Docker published ports.
+
 You built a Windows binary on your laptop and want it signed, but the
 YubiKey lives in the server across the house. Do **not** try to hit the
 public `sign.*` hostname from the laptop: mTLS may pass, but signerd will

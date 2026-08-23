@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 # Start pcscd, wait for it to come up, then run signerd. One pcscd owns the
 # token; never run a second one (in the container or on the host).
-set -e
+set -euo pipefail
+
+if [ -z "${SIGNERD_PKCS11_MODULE:-}" ] || [ ! -e "${SIGNERD_PKCS11_MODULE}" ]; then
+  found="$(dpkg -L ykcs11 2>/dev/null | grep -m1 'libykcs11\.so$' || true)"
+  if [ -n "${found}" ]; then
+    export SIGNERD_PKCS11_MODULE="${found}"
+  fi
+fi
 
 pcscd --foreground &
 

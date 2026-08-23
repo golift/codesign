@@ -28,7 +28,9 @@ RUN CGO_ENABLED=0 go build -ldflags "-s -w \
 
 FROM debian:bookworm-slim
 
-# pcscd + libccid reach the token; the ykcs11 binary package (source:
+# pcscd + USB CCID need to stay root in this image: the daemon talks to the
+# token through pcscd started in the same container. Do not add a non-root
+# USER. pcscd + libccid reach the token; the ykcs11 binary package (source:
 # yubico-piv-tool, https://packages.debian.org/bookworm/ykcs11) provides
 # libykcs11.so; osslsigncode is the default signing backend; opensc supplies
 # pkcs11-tool for the default PIN-free health probe.
@@ -53,8 +55,9 @@ COPY --from=build /out/signerd /out/codesign /usr/local/bin/
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod 0755 /entrypoint.sh
 
-ENV SIGNERD_LISTEN=0.0.0.0:8750 \
-    SIGNERD_PKCS11_MODULE=/usr/lib/x86_64-linux-gnu/libykcs11.so
+ENV SIGNERD_LISTEN=0.0.0.0:8750
+# SIGNERD_PKCS11_MODULE is resolved in entrypoint when unset or missing
+# (Debian's libykcs11.so path depends on dpkg architecture).
 
 EXPOSE 8750
 ENTRYPOINT ["/entrypoint.sh"]
