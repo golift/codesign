@@ -217,6 +217,56 @@ func TestSignDoesNotRetryAuthFailures(t *testing.T) {
 	assert.Equal(t, int32(1), attempts.Load(), "4xx responses must not retry")
 }
 
+func TestSignRejectsInvalidHeaderMetadata(t *testing.T) {
+	t.Parallel()
+
+	var attempts atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(resp http.ResponseWriter, _ *http.Request) {
+		attempts.Add(1)
+
+		_, _ = resp.Write([]byte("signed"))
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := codesign.New(&codesign.Config{URL: server.URL, Retries: 5})
+	require.NoError(t, err)
+
+	// A Unix filename may contain a newline, which is not a valid header value.
+	_, err = client.Sign(t.Context(), "app\n.exe", []byte("MZ"), nil)
+	require.ErrorIs(t, err, codesign.ErrInvalidHeader)
+	assert.Zero(t, attempts.Load(), "an invalid header must fail before any request or retry")
+
+	_, err = client.Sign(t.Context(), "app.exe", []byte("MZ"), &codesign.SignOptions{Name: "bad\x00name"})
+	require.ErrorIs(t, err, codesign.ErrInvalidHeader)
+}
+
+func TestSignDoesNotFollowRedirects(t *testing.T) {
+	t.Parallel()
+
+	var signHits atomic.Int32
+
+	mux := http.NewServeMux()
+	mux.HandleFunc(codesign.SignPath, func(resp http.ResponseWriter, _ *http.Request) {
+		signHits.Add(1)
+		http.Redirect(resp, &http.Request{}, "/elsewhere", http.StatusFound)
+	})
+	mux.HandleFunc("/elsewhere", func(resp http.ResponseWriter, _ *http.Request) {
+		_, _ = resp.Write([]byte("leaked-signed-bytes"))
+	})
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	client, err := codesign.New(&codesign.Config{URL: server.URL})
+	require.NoError(t, err)
+
+	signed, err := client.Sign(t.Context(), "app.exe", []byte("MZ"), nil)
+	require.Error(t, err, "a redirect must not be followed and accepted as the signed artifact")
+	assert.NotContains(t, string(signed), "leaked")
+	assert.Equal(t, int32(1), signHits.Load())
+}
+
 func TestSignErrorBodyIsCapped(t *testing.T) {
 	t.Parallel()
 

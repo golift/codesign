@@ -36,7 +36,8 @@ var (
 	ErrEmptyOIDC     = errors.New("GitHub Actions OIDC response contained no token")
 	ErrNoActionsOIDC = errors.New("not running under GitHub Actions with id-token permission " +
 		"(ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN are unset)")
-	errSignFailed = errors.New("signing service error")
+	ErrInvalidHeader = errors.New("request metadata contains characters not valid in an HTTP header")
+	errSignFailed    = errors.New("signing service error")
 )
 
 // Config builds a Client.
@@ -58,7 +59,7 @@ type Config struct {
 	// Retries is how many times a failed request is retried (network errors
 	// and gateway errors only; auth and validation failures never retry).
 	Retries int
-	// Timeout per attempt. Defaults to DefaultTimeout.
+	// Timeout per attempt. Non-positive uses DefaultTimeout.
 	Timeout time.Duration
 }
 
@@ -100,7 +101,9 @@ func New(config *Config) (*Client, error) {
 		return nil, fmt.Errorf("%w: %s", ErrInsecureURL, client.config.URL)
 	}
 
-	if client.config.Timeout == 0 {
+	// http.Client treats a non-positive Timeout as "no timeout"; force the
+	// documented per-attempt default so a negative value cannot hang forever.
+	if client.config.Timeout <= 0 {
 		client.config.Timeout = DefaultTimeout
 	}
 
@@ -128,6 +131,12 @@ func New(config *Config) (*Client, error) {
 	client.web = &http.Client{
 		Timeout:   client.config.Timeout,
 		Transport: cloned,
+		// Never follow redirects: a 3xx on /v1/sign could downgrade the POST
+		// to a GET or replay the artifact to another host. Surface every 3xx to
+		// signOnce as a non-200 instead.
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 	}
 
 	return client, nil
@@ -159,6 +168,13 @@ func (c *Client) Health(ctx context.Context) error {
 func (c *Client) Sign(ctx context.Context, filename string, data []byte, opts *SignOptions) ([]byte, error) {
 	if opts == nil {
 		opts = &SignOptions{}
+	}
+
+	// A deterministic request-build failure (a filename with a newline, say)
+	// must not consume the network retry budget; reject it before the loop.
+	err := validateHeaders(filename, opts)
+	if err != nil {
+		return nil, err
 	}
 
 	var lastErr error
@@ -266,6 +282,36 @@ func outputMode(inputPath, outputPath string) fs.FileMode {
 	}
 
 	return info.Mode().Perm()
+}
+
+// validateHeaders rejects request metadata that net/http would refuse to send
+// as an HTTP header value. These are deterministic build failures, so catching
+// them keeps them out of the network retry loop.
+func validateHeaders(filename string, opts *SignOptions) error {
+	fields := []struct {
+		name, value string
+	}{
+		{HeaderFilename, filename},
+		{HeaderName, opts.Name},
+		{HeaderURL, opts.URL},
+	}
+
+	for _, field := range fields {
+		if !validHeaderValue(field.value) {
+			return fmt.Errorf("%w: %s", ErrInvalidHeader, field.name)
+		}
+	}
+
+	return nil
+}
+
+// validHeaderValue mirrors net/http's field-value rule: no ASCII control
+// characters other than horizontal tab, and no DEL. High bytes (obs-text) are
+// allowed, matching the transport.
+func validHeaderValue(value string) bool {
+	return strings.IndexFunc(value, func(char rune) bool {
+		return (char < 0x20 && char != '\t') || char == 0x7f
+	}) < 0
 }
 
 // signOnce performs one POST /v1/sign attempt. The second return value says
