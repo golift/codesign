@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -160,8 +161,6 @@ func newDaemon(config *Config) (*server.Server, error) {
 		slog.Warn("allow_unauthenticated_loopback is on; any process that can reach loopback can sign")
 	}
 
-	const bytesPerMiB = 1 << 20
-
 	return server.New(&server.Config{
 		Addr:                         config.Listen,
 		MaxBody:                      config.MaxBodyMiB * bytesPerMiB,
@@ -237,9 +236,13 @@ var (
 	errNoCertFile     = errors.New("cert_file is required")
 	errNoJsignProbe   = errors.New("jsign backend needs pkcs11_module or health_command")
 	errFakeDisabled   = errors.New("fake backend requires SIGNERD_ALLOW_FAKE=1")
+	errBadMaxBody     = errors.New("max_body_mib must be non-negative and not overflow int64 bytes")
 )
 
-const allowFakeEnv = "SIGNERD_ALLOW_FAKE"
+const (
+	allowFakeEnv = "SIGNERD_ALLOW_FAKE"
+	bytesPerMiB  = 1 << 20
+)
 
 func requireFile(path, field string) error {
 	_, err := os.Stat(path)
@@ -254,6 +257,12 @@ func requireFile(path, field string) error {
 // need their module and certificate chain on disk. The PIN is optional at
 // start (health must not need it) but missing PIN is logged.
 func validateConfig(config *Config) error {
+	// Zero means "use the server default"; negative or overflowing values would
+	// otherwise become a broken byte limit that rejects every upload.
+	if config.MaxBodyMiB < 0 || config.MaxBodyMiB > math.MaxInt64/bytesPerMiB {
+		return fmt.Errorf("%w: %d", errBadMaxBody, config.MaxBodyMiB)
+	}
+
 	if config.PIN == "" && !strings.EqualFold(config.Backend, "fake") {
 		slog.Warn("no PIN configured; signing will fail until SIGNERD_PIN or pin_file is set")
 	}

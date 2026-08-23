@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -60,6 +61,26 @@ func TestValidateConfig(t *testing.T) {
 		HealthCommand: []string{"true"},
 		PIN:           "1",
 	}))
+}
+
+func TestValidateConfigMaxBody(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	module := filepath.Join(dir, "libykcs11.so")
+	cert := filepath.Join(dir, "chain.pem")
+
+	require.NoError(t, os.WriteFile(module, []byte("so"), 0o600))
+	require.NoError(t, os.WriteFile(cert, []byte("cert"), 0o600))
+
+	base := func(mib int64) *Config {
+		return &Config{PKCS11Module: module, CertFile: cert, PIN: "1", MaxBodyMiB: mib}
+	}
+
+	require.NoError(t, validateConfig(base(0)), "zero means use the server default")
+	require.NoError(t, validateConfig(base(100)))
+	require.ErrorIs(t, validateConfig(base(-1)), errBadMaxBody)
+	require.ErrorIs(t, validateConfig(base(math.MaxInt64/bytesPerMiB+1)), errBadMaxBody)
 }
 
 func TestBuildSignerFakeRequiresEnv(t *testing.T) {

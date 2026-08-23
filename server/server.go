@@ -12,6 +12,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -109,7 +110,7 @@ type Config struct {
 // Server is the signerd HTTP daemon. Create one with New.
 type Server struct {
 	config    Config
-	signMu    sync.Mutex
+	token     chan struct{}
 	uploads   chan struct{}
 	web       *http.Server
 	healthMu  sync.Mutex
@@ -125,6 +126,7 @@ func New(config *Config) *Server {
 
 	server := &Server{
 		config:  *config,
+		token:   make(chan struct{}, 1),
 		uploads: make(chan struct{}, maxInFlightUploads),
 	}
 
@@ -492,40 +494,30 @@ func writeSigned(resp http.ResponseWriter, path string) error {
 	return nil
 }
 
-// withToken serializes hardware-token operations (sign and health). The lock
-// wait respects ctx so a timed-out health probe cannot sit behind a sign
-// forever. Unlock is deferred so a panicking backend cannot deadlock the daemon.
+// withToken serializes hardware-token operations (sign and health) through a
+// one-slot semaphore. Acquisition is a context-aware channel send, so a
+// canceled or timed-out caller (for example an unauthenticated /health probe)
+// returns at once instead of leaking a goroutine parked on a mutex while a slow
+// sign holds the token. A panicking backend releases the slot via defer.
 func (s *Server) withToken(ctx context.Context, operation func(context.Context) error) error {
-	acquired := make(chan struct{})
-
-	go func() {
-		s.signMu.Lock()
-
-		select {
-		case acquired <- struct{}{}:
-		case <-ctx.Done():
-			s.signMu.Unlock()
-		}
-	}()
-
 	select {
-	case <-acquired:
-		defer s.signMu.Unlock()
-
-		err := ctx.Err()
-		if err != nil {
-			return fmt.Errorf("token operation canceled: %w", err)
-		}
-
-		err = operation(ctx)
-		if err != nil {
-			return err
-		}
-
-		return nil
+	case s.token <- struct{}{}:
+		defer func() { <-s.token }()
 	case <-ctx.Done():
 		return fmt.Errorf("token operation canceled: %w", ctx.Err())
 	}
+
+	err := ctx.Err()
+	if err != nil {
+		return fmt.Errorf("token operation canceled: %w", err)
+	}
+
+	err = operation(ctx)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // sanitizeMetadata trims Authenticode name/URL headers and rejects values
@@ -555,41 +547,165 @@ func isLoopback(remoteAddr string) bool {
 	return addr != nil && addr.IsLoopback()
 }
 
-// detectKind reads magic bytes from the start of an uploaded file.
+// detectKind classifies an uploaded file by inspecting its header and returns
+// the temp-file extension the backend should use. It is a coarse gate; the
+// backend performs authoritative format validation. A PE must carry the
+// "PE\0\0" signature (not merely "MZ"), and a compound file must carry a
+// Windows Installer class id, so DOS stubs and Office documents are rejected
+// with 415 instead of reaching the signer.
 func detectKind(file *os.File) (string, error) {
-	_, err := file.Seek(0, io.SeekStart)
+	info, err := file.Stat()
 	if err != nil {
-		return "", fmt.Errorf("rewinding upload: %w", err)
+		return "", fmt.Errorf("statting upload: %w", err)
 	}
 
-	peek := make([]byte, 8) //nolint:mnd // PE is 2 bytes, MSI is 8.
-
-	n, err := io.ReadFull(file, peek)
-	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		return "", fmt.Errorf("reading magic: %w", err)
-	}
-
-	kind := fileKind(peek[:n])
-	if kind == "" {
+	switch {
+	case isPE(file, info.Size()):
+		return ".exe", nil
+	case isMSI(file, info.Size()):
+		return ".msi", nil
+	default:
 		return "", errNotSignable
 	}
-
-	return kind, nil
 }
 
-// fileKind returns a default file extension for the upload based on its
-// magic bytes, or "" when the upload is not signable.
-func fileKind(body []byte) string {
-	if len(body) >= 2 && body[0] == 'M' && body[1] == 'Z' {
-		return ".exe"
+// isPE reports whether the file is a PE image: an "MZ" DOS header whose
+// e_lfanew offset points at the "PE\0\0" signature.
+func isPE(file io.ReaderAt, size int64) bool {
+	const (
+		dosHeaderLen = 0x40 // through e_lfanew (uint32 at 0x3C)
+		lfanewAt     = 0x3C
+		peSigLen     = 4
+	)
+
+	if size < dosHeaderLen {
+		return false
 	}
 
-	msiMagic := []byte{0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1}
-	if bytes.HasPrefix(body, msiMagic) {
-		return ".msi"
+	dos := make([]byte, dosHeaderLen)
+
+	_, err := file.ReadAt(dos, 0)
+	if err != nil {
+		return false
 	}
 
-	return ""
+	if dos[0] != 'M' || dos[1] != 'Z' {
+		return false
+	}
+
+	lfanew := int64(binary.LittleEndian.Uint32(dos[lfanewAt:]))
+
+	sig := make([]byte, peSigLen)
+
+	_, err = file.ReadAt(sig, lfanew)
+	if err != nil {
+		return false
+	}
+
+	return bytes.Equal(sig, []byte("PE\x00\x00"))
+}
+
+// cfbfMagic is the Compound File Binary Format (OLE) signature shared by MSI
+// packages and other compound documents such as legacy Office files.
+const cfbfMagic = "\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+// isMSI reports whether a compound-file upload is a Windows Installer package
+// by reading its root storage class id. It fails open: a compound file whose
+// class id cannot be read with confidence (short, unusual sector size) is
+// treated as an MSI and left for the backend to validate, so a valid installer
+// is never rejected here. Non-compound files, and compound files with a
+// non-installer class id (Office documents), return false.
+func isMSI(file io.ReaderAt, size int64) bool {
+	sig := make([]byte, len(cfbfMagic))
+
+	_, err := file.ReadAt(sig, 0)
+	if err != nil || string(sig) != cfbfMagic {
+		return false
+	}
+
+	clsid, ok := compoundRootCLSID(file, size)
+	if !ok {
+		return true
+	}
+
+	return isInstallerCLSID(clsid)
+}
+
+// compoundRootCLSID returns the 16-byte class id of a compound file's root
+// storage entry, or ok=false when the header or directory cannot be located.
+func compoundRootCLSID(file io.ReaderAt, size int64) ([]byte, bool) {
+	const (
+		headerLen        = 512
+		sectorShiftAt    = 30
+		firstDirSectorAt = 48
+		dirEntryLen      = 128
+		rootCLSIDAt      = 0x50
+		clsidLen         = 16
+		minSectorShift   = 7  // 128-byte sectors
+		maxSectorShift   = 12 // 4096-byte sectors
+		freeSector       = 0xFFFFFFFF
+	)
+
+	if size < headerLen {
+		return nil, false
+	}
+
+	header := make([]byte, headerLen)
+
+	_, err := file.ReadAt(header, 0)
+	if err != nil {
+		return nil, false
+	}
+
+	sectorShift := binary.LittleEndian.Uint16(header[sectorShiftAt:])
+	if sectorShift < minSectorShift || sectorShift > maxSectorShift {
+		return nil, false
+	}
+
+	firstDirSector := binary.LittleEndian.Uint32(header[firstDirSectorAt:])
+	if firstDirSector == freeSector {
+		return nil, false
+	}
+
+	dirOffset := (int64(firstDirSector) + 1) * (int64(1) << sectorShift)
+	if dirOffset+dirEntryLen > size {
+		return nil, false
+	}
+
+	entry := make([]byte, dirEntryLen)
+
+	_, err = file.ReadAt(entry, dirOffset)
+	if err != nil {
+		return nil, false
+	}
+
+	return entry[rootCLSIDAt : rootCLSIDAt+clsidLen], true
+}
+
+// isInstallerCLSID reports whether a compound-file root class id belongs to the
+// Windows Installer family, all sharing the -0000-0000-C000-000000000046 tail.
+func isInstallerCLSID(clsid []byte) bool {
+	const (
+		clsidLen = 16
+		msi      = 0x000C1084 // .msi database
+		msp      = 0x000C1086 // .msp patch
+		mst      = 0x000C1082 // .mst transform
+		msm      = 0x000C1090 // .msm merge module
+	)
+
+	if len(clsid) != clsidLen {
+		return false
+	}
+
+	switch binary.LittleEndian.Uint32(clsid[0:4]) {
+	case msi, msp, mst, msm:
+	default:
+		return false
+	}
+
+	tail := []byte{0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}
+
+	return bytes.Equal(clsid[4:16], tail)
 }
 
 // safeExtension returns a temp-file extension compatible with the

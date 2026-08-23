@@ -3,6 +3,7 @@ package server_test
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/http"
@@ -22,7 +23,43 @@ import (
 const (
 	remotePeer = "203.0.113.9:54321" // TEST-NET address: never loopback.
 	goodToken  = "good-token"
-	peBody     = "MZ this is a fake portable executable"
+)
+
+// peBody is a minimal but structurally valid PE image: an "MZ" DOS header whose
+// e_lfanew (offset 0x3C) points at the "PE\0\0" signature at offset 0x40.
+var peBody = string(makePE())
+
+func makePE() []byte {
+	buf := make([]byte, 0x44)
+	buf[0], buf[1] = 'M', 'Z'
+	binary.LittleEndian.PutUint32(buf[0x3C:], 0x40)
+	copy(buf[0x40:], "PE\x00\x00")
+
+	return buf
+}
+
+// compoundFile builds a minimal Compound File Binary (OLE) container whose root
+// storage entry carries the given 16-byte class id. The directory lives in the
+// first sector after the 512-byte header.
+func compoundFile(clsid []byte) string {
+	const headerLen, dirEntryLen, rootCLSIDAt = 512, 128, 0x50
+
+	buf := make([]byte, headerLen+dirEntryLen)
+	copy(buf, []byte{0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1})
+	binary.LittleEndian.PutUint16(buf[28:], 0xFFFE) // byte-order mark
+	binary.LittleEndian.PutUint16(buf[30:], 9)      // 512-byte sectors
+	binary.LittleEndian.PutUint32(buf[48:], 0)      // first directory sector
+	copy(buf[headerLen+rootCLSIDAt:], clsid)
+
+	return string(buf)
+}
+
+// clsidMSI is the Windows Installer database root class id
+// {000C1084-0000-0000-C000-000000000046}; clsidDoc is a legacy Word document
+// {00020906-0000-0000-C000-000000000046}, a compound file that is not an MSI.
+var (
+	clsidMSI = []byte{0x84, 0x10, 0x0c, 0x00, 0, 0, 0, 0, 0xc0, 0, 0, 0, 0, 0, 0, 0x46}
+	clsidDoc = []byte{0x06, 0x09, 0x02, 0x00, 0, 0, 0, 0, 0xc0, 0, 0, 0, 0, 0, 0, 0x46}
 )
 
 // stubVerifier accepts exactly one token.
@@ -261,6 +298,50 @@ func TestSignRejectsBadMagic(t *testing.T) {
 		"Authorization": "Bearer " + goodToken,
 	}))
 	assert.Equal(t, http.StatusUnsupportedMediaType, recorder.Code)
+}
+
+func TestSignRejectsBareMZ(t *testing.T) {
+	t.Parallel()
+
+	handler := newServer(t, &signer.Fake{})
+
+	// "MZ" without the PE signature is a DOS stub, not a signable PE.
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, signRequest(t.Context(), "MZ this is only a dos stub", map[string]string{
+		"Authorization": "Bearer " + goodToken,
+	}))
+	assert.Equal(t, http.StatusUnsupportedMediaType, recorder.Code)
+}
+
+func TestSignRejectsNonInstallerCompoundFile(t *testing.T) {
+	t.Parallel()
+
+	handler := newServer(t, &signer.Fake{})
+
+	// A well-formed compound file whose root class id is a Word document, not
+	// an installer, must not reach the signer.
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, signRequest(t.Context(), compoundFile(clsidDoc), map[string]string{
+		"Authorization": "Bearer " + goodToken,
+	}))
+	assert.Equal(t, http.StatusUnsupportedMediaType, recorder.Code)
+}
+
+func TestSignAcceptsInstallerCompoundFile(t *testing.T) {
+	t.Parallel()
+
+	fake := &signer.Fake{}
+	handler := newServer(t, fake)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, signRequest(t.Context(), compoundFile(clsidMSI), map[string]string{
+		"Authorization": "Bearer " + goodToken,
+	}))
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+
+	requests := fake.Requests()
+	require.Len(t, requests, 1)
+	assert.True(t, strings.HasSuffix(requests[0].InputPath, ".msi"), "installer compound files get a .msi temp file")
 }
 
 func TestSignRejectsOversizedBody(t *testing.T) {

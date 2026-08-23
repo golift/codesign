@@ -2,8 +2,10 @@ package codesign
 
 // The signerd HTTP protocol, shared by the daemon, the client library, and
 // the CLI. POST the raw PE/MSI bytes to SignPath and read the signed bytes
-// back. Remote callers authenticate with a GitHub Actions OIDC bearer token;
-// only requests arriving from the daemon's loopback skip that check.
+// back. Callers authenticate with a GitHub Actions OIDC bearer token. Loopback
+// peers may skip that check, but only when the daemon is explicitly configured
+// to allow it (AllowUnauthenticatedLoopback); by default every caller, loopback
+// or not, must present a token.
 const (
 	// SignPath accepts a POST with the unsigned file as the request body and
 	// returns the signed file as the response body.
