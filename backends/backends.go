@@ -16,13 +16,20 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 )
 
-// ErrNoToken is returned by Health when the probe ran but produced no
-// output, which usually means the configured token is unplugged.
-var ErrNoToken = errors.New("health check produced no token or certificate output")
+var (
+	// ErrNoToken is returned by Health when the probe ran but produced no
+	// output, which usually means the configured token is unplugged.
+	ErrNoToken = errors.New("health check produced no token or certificate output")
+	// ErrNoPKCS11Module is returned by Sign when osslsigncode has no module path.
+	ErrNoPKCS11Module = errors.New("pkcs11 module path is required")
+	// ErrNoCertFile is returned by Sign when the certificate chain path is empty.
+	ErrNoCertFile = errors.New("certificate chain file is required")
 
-var errNoHealthCommand = errors.New("health command is empty")
+	errNoHealthCommand = errors.New("health command is empty")
+)
 
 const (
 	// DefaultTimestampURL is SSL.com's RFC 3161 timestamp authority.
@@ -90,6 +97,52 @@ func copyFile(source, destination string) error {
 	if err != nil {
 		return fmt.Errorf("closing %s: %w", destination, err)
 	}
+
+	return nil
+}
+
+// publishSigned runs write against a sibling staging file, then renames it
+// onto output so OutputPath only appears after a successful sign. A failed
+// sign leaves neither a partial -out nor an unsigned copy at the target.
+func publishSigned(output string, write func(staging string) error) error {
+	dir := filepath.Dir(output)
+	if dir == "" {
+		dir = "."
+	}
+
+	staging, err := os.CreateTemp(dir, "."+filepath.Base(output)+".signing-*")
+	if err != nil {
+		return fmt.Errorf("creating staging file: %w", err)
+	}
+
+	path := staging.Name()
+
+	err = staging.Close()
+	if err != nil {
+		_ = os.Remove(path)
+
+		return fmt.Errorf("closing staging file: %w", err)
+	}
+
+	published := false
+
+	defer func() {
+		if !published {
+			_ = os.Remove(path)
+		}
+	}()
+
+	err = write(path)
+	if err != nil {
+		return err
+	}
+
+	err = os.Rename(path, output)
+	if err != nil {
+		return fmt.Errorf("publishing signed file: %w", err)
+	}
+
+	published = true
 
 	return nil
 }
@@ -169,13 +222,6 @@ func withPINFile(pin string, use func(path string) error) error {
 
 	if closeErr != nil {
 		return fmt.Errorf("closing pin file: %w", closeErr)
-	}
-
-	const onlyOwner = 0o600
-
-	err = os.Chmod(path, onlyOwner)
-	if err != nil {
-		return fmt.Errorf("locking pin file: %w", err)
 	}
 
 	return use(path)

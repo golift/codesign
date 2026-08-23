@@ -86,58 +86,66 @@ func NewJsign(config *JsignConfig) *Jsign {
 	return backend
 }
 
-// Sign copies the input to the output path, then invokes jsign on the copy.
+// Sign copies the input to a staging file, invokes jsign on the copy, then
+// publishes the staging file to OutputPath. A failed jsign leaves no unsigned
+// artifact at the target.
 func (s *Jsign) Sign(ctx context.Context, req *signer.Request) error {
 	err := signer.Check(req)
 	if err != nil {
 		return fmt.Errorf("jsign sign: %w", err)
 	}
 
-	err = copyFile(req.InputPath, req.OutputPath)
-	if err != nil {
-		return fmt.Errorf("jsign sign: %w", err)
+	if s.config.CertFile == "" {
+		return fmt.Errorf("jsign sign: %w", ErrNoCertFile)
 	}
 
-	args := []string{
-		"--storetype", s.config.StoreType,
-		"--certfile", s.config.CertFile,
-		"--alg", s.config.Digest,
-		"--tsaurl", s.config.TimestampURL,
-	}
-
-	return withPINFile(s.config.PIN, func(pinPath string) error {
-		runArgs := slices.Clone(args)
-
-		if s.config.Alias != "" {
-			runArgs = append(runArgs, "--alias", s.config.Alias)
-		}
-
-		if pinPath != "" {
-			runArgs = append(runArgs, "--storepass", "file:"+pinPath)
-		}
-
-		if name := fallback(req.Name, s.config.Name); name != "" {
-			runArgs = append(runArgs, "--name", name)
-		}
-
-		if url := fallback(req.URL, s.config.URL); url != "" {
-			runArgs = append(runArgs, "--url", url)
-		}
-
-		runArgs = append(runArgs, req.OutputPath)
-
-		_, err := s.config.Run(ctx, s.config.Command, runArgs...)
+	return publishSigned(req.OutputPath, func(staging string) error {
+		err := copyFile(req.InputPath, staging)
 		if err != nil {
 			return fmt.Errorf("jsign sign: %w", err)
 		}
 
-		return nil
+		args := []string{
+			"--storetype", s.config.StoreType,
+			"--certfile", s.config.CertFile,
+			"--alg", s.config.Digest,
+			"--tsaurl", s.config.TimestampURL,
+		}
+
+		return withPINFile(s.config.PIN, func(pinPath string) error {
+			runArgs := slices.Clone(args)
+
+			if s.config.Alias != "" {
+				runArgs = append(runArgs, "--alias", s.config.Alias)
+			}
+
+			if pinPath != "" {
+				runArgs = append(runArgs, "--storepass", "file:"+pinPath)
+			}
+
+			if name := fallback(req.Name, s.config.Name); name != "" {
+				runArgs = append(runArgs, "--name", name)
+			}
+
+			if url := fallback(req.URL, s.config.URL); url != "" {
+				runArgs = append(runArgs, "--url", url)
+			}
+
+			runArgs = append(runArgs, staging)
+
+			_, err := s.config.Run(ctx, s.config.Command, runArgs...)
+			if err != nil {
+				return fmt.Errorf("jsign sign: %w", err)
+			}
+
+			return nil
+		})
 	})
 }
 
 // Health proves the signing tool is runnable and the token is present.
 func (s *Jsign) Health(ctx context.Context) error {
-	_, err := s.config.Run(ctx, s.config.Command, "--help")
+	_, err := s.config.Run(ctx, s.config.Command, "--version")
 	if err != nil {
 		return fmt.Errorf("jsign health: %w", err)
 	}

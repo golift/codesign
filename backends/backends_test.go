@@ -35,6 +35,10 @@ func (f *fakeRunner) run(_ context.Context, command string, args ...string) ([]b
 func TestOSSLSigncodeSign(t *testing.T) {
 	t.Parallel()
 
+	dir := t.TempDir()
+	input := filepath.Join(dir, "in.exe")
+	output := filepath.Join(dir, "out.exe")
+
 	runner := &fakeRunner{}
 	backend := backends.NewOSSLSigncode(&backends.OSSLConfig{
 		Command:      "/usr/bin/osslsigncode",
@@ -49,12 +53,13 @@ func TestOSSLSigncodeSign(t *testing.T) {
 	require.Implements(t, (*signer.Signer)(nil), backend)
 
 	err := backend.Sign(t.Context(), &signer.Request{
-		InputPath:  "/tmp/in.exe",
-		OutputPath: "/tmp/out.exe",
+		InputPath:  input,
+		OutputPath: output,
 		Name:       "Request Name",
 		URL:        "https://request.example.com",
 	})
 	require.NoError(t, err)
+	require.FileExists(t, output, "successful sign must publish OutputPath")
 
 	require.Len(t, runner.calls, 1)
 	got := runner.calls[0]
@@ -71,14 +76,19 @@ func TestOSSLSigncodeSign(t *testing.T) {
 	assert.Equal(t, []string{
 		"-n", "Request Name",
 		"-i", "https://request.example.com",
-		"-in", "/tmp/in.exe",
-		"-out", "/tmp/out.exe",
-	}, got[14:])
+		"-in", input, "-out",
+	}, got[14:len(got)-1])
+	assert.Equal(t, dir, filepath.Dir(got[len(got)-1]), "tool must write a sibling staging file")
+	assert.NotEqual(t, output, got[len(got)-1], "OutputPath must not be the tool -out")
 	assert.NotContains(t, got, "123456", "PIN must not appear in argv")
 }
 
 func TestOSSLSigncodeDefaults(t *testing.T) {
 	t.Parallel()
+
+	dir := t.TempDir()
+	input := filepath.Join(dir, "in.exe")
+	output := filepath.Join(dir, "out.exe")
 
 	runner := &fakeRunner{}
 	backend := backends.NewOSSLSigncode(&backends.OSSLConfig{
@@ -87,10 +97,11 @@ func TestOSSLSigncodeDefaults(t *testing.T) {
 		Run:          runner.run,
 	})
 
-	err := backend.Sign(t.Context(), &signer.Request{InputPath: "in.exe", OutputPath: "out.exe"})
+	err := backend.Sign(t.Context(), &signer.Request{InputPath: input, OutputPath: output})
 	require.NoError(t, err)
 
 	require.Len(t, runner.calls, 1)
+	got := runner.calls[0]
 	assert.Equal(t, []string{
 		"osslsigncode", "sign",
 		"-pkcs11module", "/usr/lib/libykcs11.so",
@@ -98,20 +109,54 @@ func TestOSSLSigncodeDefaults(t *testing.T) {
 		"-key", backends.DefaultKeyID,
 		"-h", "sha384",
 		"-ts", backends.DefaultTimestampURL,
-		"-in", "in.exe",
-		"-out", "out.exe",
-	}, runner.calls[0], "default KeyID is PIV 9A; no PIN, name, or URL without configuration")
+		"-in", input, "-out",
+	}, got[:len(got)-1], "default KeyID is PIV 9A; no PIN, name, or URL without configuration")
+	assert.NotEqual(t, output, got[len(got)-1])
 }
 
 func TestOSSLSigncodeSignError(t *testing.T) {
 	t.Parallel()
 
+	dir := t.TempDir()
+	output := filepath.Join(dir, "out.exe")
 	errSign := errors.New("no token present")
 	runner := &fakeRunner{err: errSign}
-	backend := backends.NewOSSLSigncode(&backends.OSSLConfig{Run: runner.run})
+	backend := backends.NewOSSLSigncode(&backends.OSSLConfig{
+		PKCS11Module: "/usr/lib/libykcs11.so",
+		CertFile:     "/etc/signerd/chain.pem",
+		Run:          runner.run,
+	})
 
-	err := backend.Sign(t.Context(), &signer.Request{InputPath: "in.exe", OutputPath: "out.exe"})
+	err := backend.Sign(t.Context(), &signer.Request{
+		InputPath:  filepath.Join(dir, "in.exe"),
+		OutputPath: output,
+	})
 	require.ErrorIs(t, err, errSign)
+	assert.NoFileExists(t, output, "a failed sign must not leave OutputPath")
+}
+
+func TestSignRequiresConfig(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeRunner{}
+	dir := t.TempDir()
+	req := &signer.Request{
+		InputPath:  filepath.Join(dir, "in.exe"),
+		OutputPath: filepath.Join(dir, "out.exe"),
+	}
+
+	err := backends.NewOSSLSigncode(&backends.OSSLConfig{CertFile: "chain.pem", Run: runner.run}).
+		Sign(t.Context(), req)
+	require.ErrorIs(t, err, backends.ErrNoPKCS11Module)
+
+	err = backends.NewOSSLSigncode(&backends.OSSLConfig{PKCS11Module: "mod.so", Run: runner.run}).
+		Sign(t.Context(), req)
+	require.ErrorIs(t, err, backends.ErrNoCertFile)
+
+	err = backends.NewJsign(&backends.JsignConfig{Run: runner.run}).Sign(t.Context(), req)
+	require.ErrorIs(t, err, backends.ErrNoCertFile)
+
+	assert.Empty(t, runner.calls, "the tool must not run without required config")
 }
 
 func TestOSSLSigncodeHealth(t *testing.T) {
@@ -214,6 +259,8 @@ func TestJsignSign(t *testing.T) {
 	assert.Equal(t, "/usr/bin/jsign", runner.calls[0][0])
 	assert.Contains(t, runner.calls[0], "--alias")
 	assert.NotContains(t, runner.calls[0], "123456", "PIN must not appear in argv")
+	assert.NotEqual(t, output, runner.calls[0][len(runner.calls[0])-1], "jsign must sign a staging file")
+	assert.Equal(t, dir, filepath.Dir(runner.calls[0][len(runner.calls[0])-1]))
 
 	passAt := -1
 
@@ -231,14 +278,40 @@ func TestJsignSignMissingInput(t *testing.T) {
 	t.Parallel()
 
 	runner := &fakeRunner{}
-	backend := backends.NewJsign(&backends.JsignConfig{Run: runner.run})
+	output := filepath.Join(t.TempDir(), "out.exe")
+	backend := backends.NewJsign(&backends.JsignConfig{
+		CertFile: "/etc/signerd/chain.pem",
+		Run:      runner.run,
+	})
 
 	err := backend.Sign(t.Context(), &signer.Request{
 		InputPath:  filepath.Join(t.TempDir(), "missing.exe"),
-		OutputPath: filepath.Join(t.TempDir(), "out.exe"),
+		OutputPath: output,
 	})
 	require.ErrorIs(t, err, os.ErrNotExist)
 	assert.Empty(t, runner.calls, "jsign must not run when the copy fails")
+	assert.NoFileExists(t, output, "a failed copy must not leave OutputPath")
+}
+
+func TestJsignSignErrorCleansOutput(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	input := filepath.Join(dir, "app.exe")
+	output := filepath.Join(dir, "app.exe.signed")
+
+	require.NoError(t, os.WriteFile(input, []byte("MZ unsigned"), 0o600))
+
+	errSign := errors.New("jsign failed")
+	runner := &fakeRunner{err: errSign}
+	backend := backends.NewJsign(&backends.JsignConfig{
+		CertFile: "/etc/signerd/chain.pem",
+		Run:      runner.run,
+	})
+
+	err := backend.Sign(t.Context(), &signer.Request{InputPath: input, OutputPath: output})
+	require.ErrorIs(t, err, errSign)
+	assert.NoFileExists(t, output, "a failed jsign must not leave an unsigned copy at OutputPath")
 }
 
 func TestJsignHealth(t *testing.T) {
@@ -251,7 +324,7 @@ func TestJsignHealth(t *testing.T) {
 	})
 	require.NoError(t, backend.Health(t.Context()))
 	require.Len(t, runner.calls, 2)
-	assert.Equal(t, []string{"jsign", "--help"}, runner.calls[0])
+	assert.Equal(t, []string{"jsign", "--version"}, runner.calls[0])
 	assert.Equal(t, []string{
 		"pkcs11-tool", "--module", "/usr/lib/libykcs11.so",
 		"--list-objects", "--type", "cert",

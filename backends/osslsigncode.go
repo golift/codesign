@@ -84,42 +84,53 @@ func NewOSSLSigncode(config *OSSLConfig) *OSSLSigncode {
 }
 
 // Sign invokes osslsigncode to sign the request input into the output path.
+// The tool writes a sibling staging file; OutputPath is created only on success.
 func (s *OSSLSigncode) Sign(ctx context.Context, req *signer.Request) error {
 	err := signer.Check(req)
 	if err != nil {
 		return fmt.Errorf("osslsigncode sign: %w", err)
 	}
 
+	if s.config.PKCS11Module == "" {
+		return fmt.Errorf("osslsigncode sign: %w", ErrNoPKCS11Module)
+	}
+
+	if s.config.CertFile == "" {
+		return fmt.Errorf("osslsigncode sign: %w", ErrNoCertFile)
+	}
+
 	return withPINFile(s.config.PIN, func(pinPath string) error {
-		args := []string{
-			"sign",
-			"-pkcs11module", s.config.PKCS11Module,
-			"-certs", s.config.CertFile,
-			"-key", s.config.KeyID,
-			"-h", s.config.Digest,
-			"-ts", s.config.TimestampURL,
-		}
+		return publishSigned(req.OutputPath, func(staging string) error {
+			args := []string{
+				"sign",
+				"-pkcs11module", s.config.PKCS11Module,
+				"-certs", s.config.CertFile,
+				"-key", s.config.KeyID,
+				"-h", s.config.Digest,
+				"-ts", s.config.TimestampURL,
+			}
 
-		if pinPath != "" {
-			args = append(args, "-readpass", pinPath)
-		}
+			if pinPath != "" {
+				args = append(args, "-readpass", pinPath)
+			}
 
-		if name := fallback(req.Name, s.config.Name); name != "" {
-			args = append(args, "-n", name)
-		}
+			if name := fallback(req.Name, s.config.Name); name != "" {
+				args = append(args, "-n", name)
+			}
 
-		if url := fallback(req.URL, s.config.URL); url != "" {
-			args = append(args, "-i", url)
-		}
+			if url := fallback(req.URL, s.config.URL); url != "" {
+				args = append(args, "-i", url)
+			}
 
-		args = append(args, "-in", req.InputPath, "-out", req.OutputPath)
+			args = append(args, "-in", req.InputPath, "-out", staging)
 
-		_, err := s.config.Run(ctx, s.config.Command, args...)
-		if err != nil {
-			return fmt.Errorf("osslsigncode sign: %w", err)
-		}
+			_, err := s.config.Run(ctx, s.config.Command, args...)
+			if err != nil {
+				return fmt.Errorf("osslsigncode sign: %w", err)
+			}
 
-		return nil
+			return nil
+		})
 	})
 }
 
