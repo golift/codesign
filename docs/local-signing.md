@@ -43,14 +43,18 @@ Options:
    `SIGNERD_LISTEN=127.0.0.1:8750` and `allow_unauthenticated_loopback`.
    The loopback bind is real, tunnels work, and nothing is exposed to the
    LAN. On unRAID this is often the simplest.
-2. **docker exec fallback** — copy the file somewhere the container can see
-   and sign from inside (the image ships the CLI):
+2. **docker exec fallback** — copy the file *into* the container with
+   `docker cp`, sign it in place there (the image ships the CLI), then copy it
+   back out. This needs no shared bind mount:
 
    ```bash
-   scp app.exe user@nas.example:/mnt/user/scratch/
-   ssh user@nas.example docker exec signerd \
-     codesign -url http://127.0.0.1:8750 /config/../scratch/app.exe   # adjust the mount
-   scp user@nas.example:/mnt/user/scratch/app.exe ./app-signed.exe
+   scp app.exe user@nas.example:/tmp/app.exe
+   ssh user@nas.example '
+     docker cp /tmp/app.exe signerd:/tmp/app.exe
+     docker exec signerd codesign -url http://127.0.0.1:8750 /tmp/app.exe
+     docker cp signerd:/tmp/app.exe /tmp/app.exe
+   '
+   scp user@nas.example:/tmp/app.exe ./app-signed.exe
    ```
 
    Works, but it is the fallback, not the happy path.

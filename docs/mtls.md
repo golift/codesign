@@ -20,13 +20,18 @@ enough that a leak has a horizon (a year is a reasonable start).
 
 ## nginx side
 
-`nginx/sign.conf` in this repository already contains the two lines that
-matter:
+`nginx/sign.conf` in this repository already contains the lines that matter:
 
 ```nginx
 ssl_client_certificate /config/keys/client-ca.crt;  # your CA root/intermediate
 ssl_verify_client on;
+ssl_verify_depth 2;                                  # leaf -> intermediate -> root
 ```
+
+step-ca normally issues client certificates through an intermediate, so the
+presented chain is leaf → intermediate → root. nginx defaults `ssl_verify_depth`
+to 1, which rejects that chain; `2` accepts one intermediate. Raise it if your
+CA nests deeper.
 
 Export the CA certificate (public) from step-ca and place it at that path:
 
@@ -36,17 +41,21 @@ step ca root client-ca.crt
 
 ## GitHub side
 
-Store the client pair as **organization secrets** so every repo that signs
-can use them; the values are the inline PEM contents, not paths. An org
-secret is reachable from every repo in the org: mTLS proves "a workflow in
-this org", not "this specific repository". The repository allowlist (OIDC)
-is what names the repos that may sign. Any branch of an allowlisted repo
+Store the client pair as **organization secrets** so the repos that sign can
+use them; the values are the inline PEM contents, not paths. mTLS proves "a
+workflow in this org", not "this specific repository". The repository allowlist
+(OIDC) is what names the repos that may sign. Any branch of an allowlisted repo
 clears OIDC; see github-oidc.md.
 
+`gh secret set -o` defaults to `--visibility private`, which excludes public
+repos. Pass `--visibility all` to reach every repo, or scope tightly with
+`--visibility selected --repos "org/repo1,org/repo2"` (recommended: list only
+the repos that sign):
+
 ```bash
-gh secret set CODESIGN_CLIENT_CERT -o your-org < client.crt
-gh secret set CODESIGN_CLIENT_KEY  -o your-org < client.key
-gh secret set CODESIGN_URL         -o your-org --body "https://sign.example.com"
+gh secret set CODESIGN_CLIENT_CERT -o your-org --visibility all < client.crt
+gh secret set CODESIGN_CLIENT_KEY  -o your-org --visibility all < client.key
+gh secret set CODESIGN_URL         -o your-org --visibility all --body "https://sign.example.com"
 ```
 
 ## Rotation
@@ -56,9 +65,12 @@ old cert (or just let it expire if your window is short):
 
 ```bash
 step ca certificate "github-codesign" client-new.crt client-new.key --not-after 8760h
-gh secret set CODESIGN_CLIENT_CERT -o your-org < client-new.crt
-gh secret set CODESIGN_CLIENT_KEY  -o your-org < client-new.key
+gh secret set CODESIGN_CLIENT_CERT -o your-org --visibility all < client-new.crt
+gh secret set CODESIGN_CLIENT_KEY  -o your-org --visibility all < client-new.key
 ```
+
+Use the same `--visibility`/`--repos` selection you chose when first creating
+the secrets so rotation does not silently narrow their reach.
 
 Nothing on the server changes during *client* rotation — nginx trusts the
 CA, not the individual certificate. **Revoking** the old cert does not take
