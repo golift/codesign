@@ -237,6 +237,8 @@ var (
 	errNoJsignProbe   = errors.New("jsign backend needs pkcs11_module or health_command")
 	errFakeDisabled   = errors.New("fake backend requires SIGNERD_ALLOW_FAKE=1")
 	errBadMaxBody     = errors.New("max_body_mib must be non-negative and not overflow int64 bytes")
+	errNoAudience     = errors.New("github.audience is required when allowed_repositories is set")
+	errNotRegularFile = errors.New("path is not a regular file")
 )
 
 const (
@@ -245,9 +247,13 @@ const (
 )
 
 func requireFile(path, field string) error {
-	_, err := os.Stat(path)
+	info, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("%s %s: %w", field, path, err)
+	}
+
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s %s: %w", field, path, errNotRegularFile)
 	}
 
 	return nil
@@ -257,10 +263,9 @@ func requireFile(path, field string) error {
 // need their module and certificate chain on disk. The PIN is optional at
 // start (health must not need it) but missing PIN is logged.
 func validateConfig(config *Config) error {
-	// Zero means "use the server default"; negative or overflowing values would
-	// otherwise become a broken byte limit that rejects every upload.
-	if config.MaxBodyMiB < 0 || config.MaxBodyMiB > math.MaxInt64/bytesPerMiB {
-		return fmt.Errorf("%w: %d", errBadMaxBody, config.MaxBodyMiB)
+	err := validateLimits(config)
+	if err != nil {
+		return err
 	}
 
 	if config.PIN == "" && !strings.EqualFold(config.Backend, "fake") {
@@ -277,6 +282,23 @@ func validateConfig(config *Config) error {
 	default:
 		return fmt.Errorf("%w: %s", errUnknownBackend, config.Backend)
 	}
+}
+
+func validateLimits(config *Config) error {
+	// Zero means "use the server default"; negative or overflowing values would
+	// otherwise become a broken byte limit that rejects every upload.
+	if config.MaxBodyMiB < 0 || config.MaxBodyMiB > math.MaxInt64/bytesPerMiB {
+		return fmt.Errorf("%w: %d", errBadMaxBody, config.MaxBodyMiB)
+	}
+
+	// A nonempty allowlist enables remote signing. oidc.Verify then refuses
+	// every token when audience is empty, while /health can still be healthy.
+	// Fail here so the operator sees the misconfiguration at start.
+	if len(config.Github.AllowedRepositories) > 0 && strings.TrimSpace(config.Github.Audience) == "" {
+		return errNoAudience
+	}
+
+	return nil
 }
 
 func validateOSSL(config *Config) error {

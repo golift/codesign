@@ -83,6 +83,42 @@ func TestValidateConfigMaxBody(t *testing.T) {
 	require.ErrorIs(t, validateConfig(base(math.MaxInt64/bytesPerMiB+1)), errBadMaxBody)
 }
 
+func TestValidateConfigRequiresAudience(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	module := filepath.Join(dir, "libykcs11.so")
+	cert := filepath.Join(dir, "chain.pem")
+
+	require.NoError(t, os.WriteFile(module, []byte("so"), 0o600))
+	require.NoError(t, os.WriteFile(cert, []byte("cert"), 0o600))
+
+	base := Config{PKCS11Module: module, CertFile: cert, PIN: "1"}
+
+	require.NoError(t, validateConfig(&base), "empty allowlist disables remote signing; audience unused")
+
+	base.Github.AllowedRepositories = []string{"golift/codesign"}
+	require.ErrorIs(t, validateConfig(&base), errNoAudience)
+
+	base.Github.Audience = "   "
+	require.ErrorIs(t, validateConfig(&base), errNoAudience)
+
+	base.Github.Audience = "https://sign.example.com"
+	require.NoError(t, validateConfig(&base))
+}
+
+func TestValidateConfigRejectsDirectory(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cert := filepath.Join(dir, "chain.pem")
+
+	require.NoError(t, os.WriteFile(cert, []byte("cert"), 0o600))
+
+	err := validateConfig(&Config{PKCS11Module: dir, CertFile: cert, PIN: "1"})
+	require.ErrorIs(t, err, errNotRegularFile)
+}
+
 func TestBuildSignerFakeRequiresEnv(t *testing.T) {
 	t.Setenv(allowFakeEnv, "")
 
