@@ -53,8 +53,8 @@ type Config struct {
 	// RootCA optionally pins the CA that signed the server certificate.
 	// File path or inline PEM.
 	RootCA string
-	// Token is a GitHub Actions OIDC bearer token. Leave empty on loopback
-	// or SSH-tunnel connections; required through the public proxy.
+	// Token is a GitHub Actions OIDC bearer token. It may be left empty only
+	// when the server explicitly allows unauthenticated loopback requests.
 	Token string
 	// Retries is how many times a failed request is retried (network errors
 	// and gateway errors only; auth and validation failures never retry).
