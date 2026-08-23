@@ -72,6 +72,11 @@ type Config struct {
 	URL string `toml:"url" xml:"url"`
 	// WorkDir holds per-request temp files.
 	WorkDir string `toml:"work_dir" xml:"work_dir"`
+	// AllowUnauthenticatedLoopback lets 127.0.0.1/::1 skip OIDC. Default
+	// false: v1 is GitHub Actions, and a reverse proxy aimed at a loopback
+	// upstream would otherwise skip the gate. Enable only for an SSH-tunnel
+	// operator workflow; any local process can then sign.
+	AllowUnauthenticatedLoopback bool `toml:"allow_unauthenticated_loopback" xml:"allow_unauthenticated_loopback"`
 	// Github configures OIDC verification for remote callers.
 	Github GithubConfig `toml:"github" xml:"github"`
 }
@@ -118,31 +123,10 @@ func run() error {
 		return err
 	}
 
-	backend, err := buildSigner(config)
+	daemon, err := newDaemon(config)
 	if err != nil {
 		return err
 	}
-
-	var verifier server.Verifier
-	if len(config.Github.AllowedRepositories) > 0 {
-		verifier = oidc.New(&oidc.Config{
-			Issuer:              config.Github.Issuer,
-			Audience:            config.Github.Audience,
-			AllowedRepositories: config.Github.AllowedRepositories,
-		})
-	} else {
-		slog.Warn("no allowed_repositories configured; remote signing is disabled, loopback still works")
-	}
-
-	const bytesPerMiB = 1 << 20
-
-	daemon := server.New(&server.Config{
-		Addr:     config.Listen,
-		MaxBody:  config.MaxBodyMiB * bytesPerMiB,
-		Signer:   backend,
-		Verifier: verifier,
-		WorkDir:  config.WorkDir,
-	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -153,6 +137,39 @@ func run() error {
 	}
 
 	return nil
+}
+
+func newDaemon(config *Config) (*server.Server, error) {
+	backend, err := buildSigner(config)
+	if err != nil {
+		return nil, err
+	}
+
+	var verifier server.Verifier
+	if len(config.Github.AllowedRepositories) > 0 {
+		verifier = oidc.New(&oidc.Config{
+			Issuer:              config.Github.Issuer,
+			Audience:            config.Github.Audience,
+			AllowedRepositories: config.Github.AllowedRepositories,
+		})
+	} else {
+		slog.Warn("no allowed_repositories configured; remote signing is disabled")
+	}
+
+	if config.AllowUnauthenticatedLoopback {
+		slog.Warn("allow_unauthenticated_loopback is on; any process that can reach loopback can sign")
+	}
+
+	const bytesPerMiB = 1 << 20
+
+	return server.New(&server.Config{
+		Addr:                         config.Listen,
+		MaxBody:                      config.MaxBodyMiB * bytesPerMiB,
+		Signer:                       backend,
+		Verifier:                     verifier,
+		WorkDir:                      config.WorkDir,
+		AllowUnauthenticatedLoopback: config.AllowUnauthenticatedLoopback,
+	}), nil
 }
 
 // loadConfig reads the config file (when present), then applies SIGNERD_*

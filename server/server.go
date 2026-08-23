@@ -1,11 +1,12 @@
 // Package server implements the signerd HTTP daemon: GET /health and
-// POST /v1/sign. Every remote request must carry a valid GitHub Actions OIDC
-// token; only connections from the daemon's own loopback interface skip that
-// check (that is what SSH tunnels land on). Requests proxied by nginx or a
-// Docker network are never loopback, so they always authenticate.
+// POST /v1/sign. Remote requests must carry a valid GitHub Actions OIDC
+// token. Loopback peers skip that check only when
+// AllowUnauthenticatedLoopback is set; the default is off so a reverse
+// proxy aimed at a loopback upstream cannot bypass OIDC.
 //
 // Signing and token-touching health checks share a mutex because the
-// hardware token performs one operation at a time.
+// hardware token performs one operation at a time. Unauthenticated
+// /health results are cached briefly so probes cannot hammer the token.
 package server
 
 import (
@@ -49,14 +50,17 @@ const (
 	// healthWait bounds GET /health, including waiting on an in-flight sign.
 	// Unauthenticated probes must not hold the token mutex indefinitely.
 	healthWait = 15 * time.Second
+	// healthCacheTTL reuses a /health result so unauthenticated probes
+	// cannot stampede the hardware token.
+	healthCacheTTL = 5 * time.Second
 	// maxMetadata is the longest Authenticode name or URL accepted from a
 	// request header (and then passed as a single tool argument).
 	maxMetadata = 256
 )
 
 var (
-	// ErrNoVerifier rejects remote requests when no OIDC verifier is
-	// configured. Loopback requests still work.
+	// ErrNoVerifier rejects requests that need OIDC when no verifier is
+	// configured. Loopback skip (when enabled) still works.
 	ErrNoVerifier = errors.New("no OIDC verifier configured, remote signing is disabled")
 	// ErrNoToken rejects remote requests without a bearer token.
 	ErrNoToken = errors.New("missing Authorization bearer token")
@@ -82,9 +86,14 @@ type Config struct {
 	MaxBody int64
 	// Signer performs the actual signing. Required.
 	Signer signer.Signer
-	// Verifier checks GitHub OIDC tokens on remote requests. When nil,
-	// every remote request is rejected and only loopback callers can sign.
+	// Verifier checks GitHub OIDC tokens. When nil, every request that
+	// is not an opted-in loopback skip is rejected.
 	Verifier Verifier
+	// AllowUnauthenticatedLoopback, when true, lets peers on 127.0.0.0/8
+	// and ::1 skip OIDC. Default false: v1 is GitHub Actions, and a reverse
+	// proxy using a loopback upstream would otherwise skip the gate for every
+	// client. Enable only for an SSH-tunnel operator workflow.
+	AllowUnauthenticatedLoopback bool
 	// WorkDir holds per-request temp files. Defaults to os.TempDir().
 	WorkDir string
 	// Logger defaults to slog.Default().
@@ -92,14 +101,20 @@ type Config struct {
 	// HealthTimeout bounds GET /health, including waiting for the token
 	// mutex. Defaults to 15s. Tests may set a shorter value.
 	HealthTimeout time.Duration
+	// HealthCacheTTL is how long a /health result is reused. Zero means
+	// the default (5s). Negative disables the cache (tests).
+	HealthCacheTTL time.Duration
 }
 
 // Server is the signerd HTTP daemon. Create one with New.
 type Server struct {
-	config  Config
-	signMu  sync.Mutex
-	uploads chan struct{}
-	web     *http.Server
+	config    Config
+	signMu    sync.Mutex
+	uploads   chan struct{}
+	web       *http.Server
+	healthMu  sync.Mutex
+	healthAt  time.Time
+	healthErr error
 }
 
 // New returns a Server with defaults applied. A nil config gets pure defaults.
@@ -131,6 +146,10 @@ func New(config *Config) *Server {
 
 	if server.config.HealthTimeout == 0 {
 		server.config.HealthTimeout = healthWait
+	}
+
+	if server.config.HealthCacheTTL == 0 {
+		server.config.HealthCacheTTL = healthCacheTTL
 	}
 
 	mux := http.NewServeMux()
@@ -187,22 +206,80 @@ func (s *Server) Serve(ctx context.Context) error {
 
 // handleHealth reports whether the backend can sign right now. It requires
 // no authentication and never touches the PIN. Details stay in the log:
-// this endpoint is unauthenticated.
+// this endpoint is unauthenticated. Results are cached briefly so a probe
+// storm cannot occupy the token mutex.
 func (s *Server) handleHealth(resp http.ResponseWriter, req *http.Request) {
+	if hit, err := s.cachedHealth(); hit {
+		writeHealth(resp, err)
+
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(req.Context(), s.config.HealthTimeout)
 	defer cancel()
 
+	probed := false
+
 	err := s.withToken(ctx, func(ctx context.Context) error {
-		return s.config.Signer.Health(ctx)
+		if hit, err := s.cachedHealth(); hit {
+			return err
+		}
+
+		probed = true
+
+		err := s.config.Signer.Health(ctx)
+		if err != nil {
+			err = fmt.Errorf("backend health: %w", err)
+		}
+
+		if ctx.Err() == nil {
+			s.storeHealth(err)
+		}
+
+		return err
 	})
-	if err != nil {
+	if probed && err != nil {
 		s.config.Logger.Error("health check failed", "error", err)
+	}
+
+	writeHealth(resp, err)
+}
+
+func writeHealth(resp http.ResponseWriter, err error) {
+	if err != nil {
 		http.Error(resp, "unhealthy", http.StatusServiceUnavailable)
 
 		return
 	}
 
 	_, _ = resp.Write([]byte("OK\n"))
+}
+
+func (s *Server) cachedHealth() (bool, error) {
+	if s.config.HealthCacheTTL < 0 {
+		return false, nil
+	}
+
+	s.healthMu.Lock()
+	defer s.healthMu.Unlock()
+
+	if s.healthAt.IsZero() || time.Since(s.healthAt) >= s.config.HealthCacheTTL {
+		return false, nil
+	}
+
+	return true, s.healthErr
+}
+
+func (s *Server) storeHealth(err error) {
+	if s.config.HealthCacheTTL < 0 {
+		return
+	}
+
+	s.healthMu.Lock()
+	defer s.healthMu.Unlock()
+
+	s.healthAt = time.Now()
+	s.healthErr = err
 }
 
 // handleSign authenticates the caller, streams the upload to disk, and
@@ -272,17 +349,17 @@ func (s *Server) replySignError(resp http.ResponseWriter, req *http.Request, cal
 	http.Error(resp, message, status)
 }
 
-// authenticate decides whether this request may sign. Loopback peers are
-// trusted (SSH tunnels land here); everyone else needs a valid GitHub OIDC
-// token whose repository is allowlisted. It returns a caller description for
-// the log line.
+// authenticate decides whether this request may sign. Loopback peers skip
+// OIDC only when AllowUnauthenticatedLoopback is set; everyone else needs a
+// valid GitHub OIDC token whose repository is allowlisted. It returns a
+// caller description for the log line.
 func (s *Server) authenticate(req *http.Request) (string, error) {
-	if isLoopback(req.RemoteAddr) {
+	if s.config.AllowUnauthenticatedLoopback && isLoopback(req.RemoteAddr) {
 		return "loopback", nil
 	}
 
-	token, ok := strings.CutPrefix(req.Header.Get("Authorization"), "Bearer ")
-	if !ok || token == "" {
+	token, ok := bearerToken(req.Header.Get("Authorization"))
+	if !ok {
 		return "", ErrNoToken
 	}
 
@@ -296,6 +373,22 @@ func (s *Server) authenticate(req *http.Request) (string, error) {
 	}
 
 	return claims.Repository, nil
+}
+
+// bearerToken extracts a Bearer token. RFC 7235 treats the scheme as
+// case-insensitive, so "Bearer" and "bearer" both work.
+func bearerToken(header string) (string, bool) {
+	scheme, token, found := strings.Cut(header, " ")
+	if !found || !strings.EqualFold(scheme, "Bearer") {
+		return "", false
+	}
+
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", false
+	}
+
+	return token, true
 }
 
 // signUpload streams the body to a temp file, checks PE/MSI magic, runs the

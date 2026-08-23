@@ -43,10 +43,11 @@ func newServer(t *testing.T, fake *signer.Fake) http.Handler {
 	t.Helper()
 
 	return server.New(&server.Config{
-		Signer:   fake,
-		Verifier: stubVerifier{},
-		MaxBody:  1024,
-		WorkDir:  t.TempDir(),
+		Signer:         fake,
+		Verifier:       stubVerifier{},
+		MaxBody:        1024,
+		WorkDir:        t.TempDir(),
+		HealthCacheTTL: -1,
 	}).Handler()
 }
 
@@ -83,6 +84,44 @@ func TestHealth(t *testing.T) {
 	assert.Equal(t, "unhealthy\n", recorder.Body.String(), "unauthenticated health must not leak backend errors")
 }
 
+type countingHealth struct {
+	signer.Fake
+
+	calls int
+}
+
+func (c *countingHealth) Health(ctx context.Context) error {
+	c.calls++
+
+	err := c.Fake.Health(ctx)
+	if err != nil {
+		return fmt.Errorf("counting health: %w", err)
+	}
+
+	return nil
+}
+
+func TestHealthCachesResult(t *testing.T) {
+	t.Parallel()
+
+	probe := &countingHealth{}
+	handler := server.New(&server.Config{
+		Signer:         probe,
+		Verifier:       stubVerifier{},
+		WorkDir:        t.TempDir(),
+		HealthCacheTTL: time.Hour,
+	}).Handler()
+
+	for range 3 {
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, codesign.HealthPath, http.NoBody)
+		handler.ServeHTTP(recorder, req)
+		assert.Equal(t, http.StatusOK, recorder.Code)
+	}
+
+	assert.Equal(t, 1, probe.calls, "repeated /health must reuse the cached probe")
+}
+
 func TestSignWithToken(t *testing.T) {
 	t.Parallel()
 
@@ -113,7 +152,14 @@ func TestSignLoopbackSkipsAuth(t *testing.T) {
 	t.Parallel()
 
 	fake := &signer.Fake{}
-	handler := newServer(t, fake)
+	handler := server.New(&server.Config{
+		Signer:                       fake,
+		Verifier:                     stubVerifier{},
+		MaxBody:                      1024,
+		WorkDir:                      t.TempDir(),
+		AllowUnauthenticatedLoopback: true,
+		HealthCacheTTL:               -1,
+	}).Handler()
 
 	req := signRequest(t.Context(), peBody, nil)
 	req.RemoteAddr = "127.0.0.1:9999"
@@ -127,6 +173,34 @@ func TestSignLoopbackSkipsAuth(t *testing.T) {
 
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
+	assert.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+}
+
+func TestSignLoopbackRequiresAuthByDefault(t *testing.T) {
+	t.Parallel()
+
+	fake := &signer.Fake{}
+	handler := newServer(t, fake)
+
+	req := signRequest(t.Context(), peBody, nil)
+	req.RemoteAddr = "127.0.0.1:9999"
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	assert.Equal(t, http.StatusUnauthorized, recorder.Code)
+	assert.Empty(t, fake.Requests())
+}
+
+func TestSignBearerSchemeIsCaseInsensitive(t *testing.T) {
+	t.Parallel()
+
+	fake := &signer.Fake{}
+	handler := newServer(t, fake)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, signRequest(t.Context(), peBody, map[string]string{
+		"Authorization": "bearer " + goodToken,
+	}))
 	assert.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
 }
 
