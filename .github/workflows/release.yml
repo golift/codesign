@@ -83,14 +83,16 @@ jobs:
           tags="${image}:${GITHUB_REF_NAME}"
           highest="$(git tag -l 'v*.*.*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
           if [ "${highest}" = "${GITHUB_REF_NAME}" ]; then
-            tags="${tags}
-${image}:latest"
+            tags="${tags}"$'\n'"${image}:latest"
           fi
           {
             echo "tags<<EOF"
             echo "${tags}"
             echo "EOF"
             echo "date=$(git show -s --format=%cI "${GITHUB_SHA}")"
+            # GoReleaser stamps {{.Version}} (no leading v); match it so the
+            # image binary's -version agrees with the archive binary's.
+            echo "version=${GITHUB_REF_NAME#v}"
           } >> "${GITHUB_OUTPUT}"
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
@@ -100,7 +102,7 @@ ${image}:latest"
           sbom: true
           tags: ${{ steps.tags.outputs.tags }}
           build-args: |
-            VERSION=${{ github.ref_name }}
+            VERSION=${{ steps.tags.outputs.version }}
             REVISION=${{ github.sha }}
             BUILDDATE=${{ steps.tags.outputs.date }}
             BRANCH=${{ github.ref_name }}

@@ -68,15 +68,16 @@ archives:
 checksum:
   name_template: checksums.txt
 
-# Keyless Sigstore signatures over checksums.txt. Verify with:
-#   cosign verify-blob --signature checksums.txt.sig --certificate checksums.txt.pem checksums.txt
+# Keyless Sigstore signature over checksums.txt. Cosign v3 writes a single
+# bundle (cert + signature + transparency proof) instead of separate .pem/.sig
+# files. Verify with:
+#   cosign verify-blob --bundle checksums.txt.sigstore.json checksums.txt
 signs:
   - cmd: cosign
-    certificate: '${artifact}.pem'
+    signature: '${artifact}.sigstore.json'
     args:
       - sign-blob
-      - '--output-certificate=${certificate}'
-      - '--output-signature=${signature}'
+      - '--bundle=${signature}'
       - '${artifact}'
       - '--yes'
     artifacts: checksum
