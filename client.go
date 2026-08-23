@@ -76,7 +76,12 @@ type Client struct {
 }
 
 // New validates the configuration, loads mTLS material, and returns a Client.
+// A nil config is treated as empty and returns ErrNoURL.
 func New(config *Config) (*Client, error) {
+	if config == nil {
+		config = &Config{}
+	}
+
 	if config.URL == "" {
 		return nil, ErrNoURL
 	}

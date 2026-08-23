@@ -31,6 +31,9 @@ func TestNewRequiresURL(t *testing.T) {
 
 	_, err := codesign.New(&codesign.Config{})
 	require.ErrorIs(t, err, codesign.ErrNoURL)
+
+	_, err = codesign.New(nil)
+	require.ErrorIs(t, err, codesign.ErrNoURL)
 }
 
 func TestSignFile(t *testing.T) {
