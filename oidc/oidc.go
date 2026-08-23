@@ -102,8 +102,13 @@ type Verifier struct {
 	attempted time.Time // last JWKS fetch attempt, successful or not.
 }
 
-// New returns a Verifier for the provided configuration.
+// New returns a Verifier for the provided configuration. A nil config gets
+// pure defaults (which still fail closed: empty audience and allowlist).
 func New(config *Config) *Verifier {
+	if config == nil {
+		config = &Config{}
+	}
+
 	verifier := &Verifier{config: *config}
 
 	if verifier.config.Issuer == "" {

@@ -329,3 +329,13 @@ func TestNewDefaults(t *testing.T) {
 	_, err := verifier.Verify(t.Context(), "nope")
 	require.Error(t, err)
 }
+
+func TestNewNilConfig(t *testing.T) {
+	t.Parallel()
+
+	verifier := oidc.New(nil)
+	require.NotNil(t, verifier)
+
+	_, err := verifier.Verify(t.Context(), "nope")
+	require.ErrorIs(t, err, oidc.ErrEmptyAllowlist)
+}
