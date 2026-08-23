@@ -23,11 +23,11 @@ with your own ssl/proxy boilerplate.
    `resolver.conf` handles container DNS.
 
    > **Never use a loopback upstream** such as `http://127.0.0.1:8750`.
-   > signerd skips the OIDC gate for loopback peers (that is the operator
-   > SSH-tunnel path), so nginx proxying from loopback would give every
-   > proxied request that free pass. Without Docker, bind signerd to a
-   > private non-loopback address (a dedicated bridge or the host's LAN IP
-   > firewalled to nginx) so the daemon sees a non-loopback peer and
+   > Loopback OIDC skip is off by default, but if an operator enables
+   > `allow_unauthenticated_loopback`, nginx proxying from loopback would
+   > give every proxied request that free pass. Without Docker, bind signerd
+   > to a private non-loopback address (a dedicated bridge or the host's LAN
+   > IP firewalled to nginx) so the daemon sees a non-loopback peer and
    > demands OIDC.
 
 4. Reload nginx and verify the gates:

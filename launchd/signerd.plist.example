@@ -10,6 +10,8 @@
 
   Config goes in ~/Library/Application Support/signerd/signerd.toml with
   pkcs11_module = "/opt/homebrew/lib/libykcs11.dylib" (brew yubico-piv-tool).
+  Replace USER in StandardOutPath/StandardErrorPath; launchd does not expand ~.
+  Logs go to ~/Library/Logs, not /tmp (world-writable).
 -->
 <plist version="1.0">
 <dict>
@@ -31,9 +33,9 @@
     </dict>
 
     <key>StandardOutPath</key>
-    <string>/tmp/signerd.log</string>
+    <string>/Users/USER/Library/Logs/signerd.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/signerd.log</string>
+    <string>/Users/USER/Library/Logs/signerd.log</string>
 
     <!-- Alternative to a pin_file: uncomment and set the PIN here, then
          chmod 0600 this plist. Prefer the pin_file. -->

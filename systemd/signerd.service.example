@@ -29,14 +29,26 @@ ExecStart=/usr/local/bin/signerd --config /etc/signerd/signerd.toml
 Restart=on-failure
 RestartSec=5
 
-# Hardening. signerd only needs its config, temp space, and pcscd's socket.
+# Hardening. signerd talks to pcscd over the /run socket, not /dev, so
+# PrivateDevices is safe. AF_NETLINK is required for DNS to the timestamp
+# server. SystemCallFilter can be commented out if a Go or osslsigncode
+# syscall is blocked on your systemd version.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+PrivateDevices=true
 ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+LockPersonality=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
 
 [Install]
 WantedBy=multi-user.target

@@ -50,6 +50,10 @@ cert_file = "/etc/signerd/chain.pem"
 #name = "My Application"
 #url = "https://app.example.com"
 
+# Loopback OIDC skip. Default false. Enable only for an SSH-tunnel operator
+# workflow; any local process that can reach the listen address can then sign.
+#allow_unauthenticated_loopback = false
+
 # Health-check command run by GET /health (program + args). The default is a
 # PIN-free pkcs11-tool certificate listing against pkcs11_module. Health also
 # runs the signing tool first; the probe must print "Certificate Object" or
@@ -61,11 +65,13 @@ cert_file = "/etc/signerd/chain.pem"
 #]
 
 [github]
-  # OIDC gate for remote (non-loopback) callers. GitHub Actions callers must
+  # OIDC gate for remote callers. GitHub Actions callers must
   # request their token with this audience; conventionally your public URL.
   audience = "https://sign.example.com"
 
   # Fail-closed allowlist. Empty means remote signing is DISABLED.
+  # Repository-level only: any branch/tag/PR workflow of an allowlisted
+  # repo with id-token: write can sign. There is no ref pin in v1.
   allowed_repositories = [
     # "Owner/repo",
   ]

@@ -9,9 +9,12 @@
 #
 # Loopback caveat in bridge mode: connections arriving through the published
 # 127.0.0.1 port reach signerd from the Docker gateway address, not from
-# loopback, so the daemon still demands OIDC. For the operator SSH-tunnel
-# workflow (docs/local-signing.md) either use network_mode: host (common on
-# unRAID) or fall back to docker exec; both are covered in that doc.
+# loopback, so the daemon still demands OIDC even if
+# allow_unauthenticated_loopback is on. For the unsupported operator
+# SSH-tunnel workflow (docs/local-signing.md) either use network_mode: host
+# (common on unRAID) or fall back to docker exec; both are covered in that
+# doc. The skip flag trusts *any* local process on that loopback port, not
+# just SSH.
 
 services:
   signerd:
@@ -43,8 +46,9 @@ services:
       - /dev/bus/usb/001/004
     # Alternative on unRAID: comment out `networks` and `ports` and use host
     # networking instead. Then SIGNERD_LISTEN=127.0.0.1:8750 is a real
-    # loopback bind, SSH tunnels get the loopback OIDC skip, and nginx cannot
-    # reach it over the Docker network (its $codesign must target the host).
+    # loopback bind (tunnels work if allow_unauthenticated_loopback is on),
+    # and nginx cannot reach it over the Docker network (its $codesign must
+    # target the host).
     #network_mode: host
 
 networks:

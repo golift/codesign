@@ -60,7 +60,7 @@ curl -fsS http://127.0.0.1:8750/health   # from the host loopback publish
 ```
 
 By default `GET /health` first runs the signing tool (`osslsigncode --version`
-or `jsign --help`), then a PIN-free `pkcs11-tool --list-objects --type cert`
+or `jsign --version`), then a PIN-free `pkcs11-tool --list-objects --type cert`
 probe against `pkcs11_module`. The probe must print `Certificate Object`;
 empty output, a heading with no certs, or a nonzero exit is unhealthy
 (unplugged token, wrong module). That lists *certificates on the module*, not

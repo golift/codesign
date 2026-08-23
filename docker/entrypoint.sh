@@ -24,4 +24,11 @@ if [ ! -S /run/pcscd/pcscd.comm ]; then
   exit 1
 fi
 
+# pcscd needs root for USB. signerd talks to it over /run/pcscd/pcscd.comm,
+# so drop to the signerd user once the socket is up (matches the systemd unit).
+if command -v setpriv >/dev/null && getent passwd signerd >/dev/null; then
+  exec setpriv --reuid=signerd --regid=signerd --init-groups --inh-caps=-all -- \
+    /usr/local/bin/signerd "$@"
+fi
+
 exec /usr/local/bin/signerd "$@"

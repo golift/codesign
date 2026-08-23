@@ -37,7 +37,11 @@ step ca root client-ca.crt
 ## GitHub side
 
 Store the client pair as **organization secrets** so every repo that signs
-can use them; the values are the inline PEM contents, not paths:
+can use them; the values are the inline PEM contents, not paths. An org
+secret is reachable from every repo in the org: mTLS proves "a workflow in
+this org", not "this specific repository". The repository allowlist (OIDC)
+is what names the repos that may sign. Any branch of an allowlisted repo
+clears OIDC; see github-oidc.md.
 
 ```bash
 gh secret set CODESIGN_CLIENT_CERT -o your-org < client.crt

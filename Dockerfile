@@ -28,9 +28,10 @@ RUN CGO_ENABLED=0 go build -ldflags "-s -w \
 
 FROM debian:bookworm-slim
 
-# pcscd + USB CCID need to stay root in this image: the daemon talks to the
-# token through pcscd started in the same container. Do not add a non-root
-# USER. pcscd + libccid reach the token; the ykcs11 binary package (source:
+# pcscd needs root to open the USB CCID device. signerd does not: it talks
+# to pcscd over /run/pcscd/pcscd.comm, so the entrypoint drops to the
+# unprivileged signerd user after the socket appears (same as the systemd
+# unit). pcscd + libccid reach the token; the ykcs11 binary package (source:
 # yubico-piv-tool, https://packages.debian.org/bookworm/ykcs11) provides
 # libykcs11.so; osslsigncode is the default signing backend; opensc supplies
 # pkcs11-tool for the default PIN-free health probe.
@@ -41,6 +42,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         osslsigncode \
         pcscd \
         ykcs11 \
+    && groupadd --system signerd \
+    && useradd --system --gid signerd --no-create-home --home /nonexistent \
+        --shell /usr/sbin/nologin signerd \
     && rm -rf /var/lib/apt/lists/*
 
 # Optional jsign backend (uncomment to bake it in):
