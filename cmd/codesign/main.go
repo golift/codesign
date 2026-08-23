@@ -7,7 +7,7 @@
 // variables, so CI needs no argument plumbing: CODESIGN_URL,
 // CODESIGN_CLIENT_CERT, CODESIGN_CLIENT_KEY, CODESIGN_CA_CERT,
 // CODESIGN_TOKEN, CODESIGN_NAME, CODESIGN_WEBSITE. The remaining flags
-// (-output, -retries, -timeout, -health) are command-line only.
+// (-output, -retries, -timeout, -health, -version) are command-line only.
 //
 // When run inside GitHub Actions without an explicit token, it requests an
 // OIDC token from the Actions runtime using the service URL as the audience.
