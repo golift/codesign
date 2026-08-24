@@ -1,0 +1,80 @@
+# signerd example configuration.
+#
+# Copy to one of:
+#   Linux:  /etc/signerd/signerd.toml  (or $XDG_CONFIG_HOME/signerd/signerd.toml)
+#   macOS:  ~/Library/Application Support/signerd/signerd.toml
+# or point at it with `signerd --config /path/to/signerd.toml`.
+#
+# Every value may be overridden by an environment variable: SIGNERD_LISTEN,
+# SIGNERD_PIN, SIGNERD_GITHUB_AUDIENCE, and so on.
+
+# Bind address. Keep the host part on loopback (or a container network that
+# sits behind an mTLS-terminating proxy). NEVER publish this raw to a LAN or
+# the internet: any peer that is not loopback must pass OIDC, but the mTLS
+# gate only exists if a proxy provides it.
+listen = "127.0.0.1:8750"
+
+# Upload cap in MiB. Match your proxy's client_max_body_size.
+max_body_mib = 100
+
+# Signing backend: "osslsigncode" (default), "jsign", or "fake" (testing).
+backend = "osslsigncode"
+
+# PKCS#11 module for the osslsigncode backend:
+#   Debian/Ubuntu: /usr/lib/<triplet>/libykcs11.so
+#     package ykcs11 (source: yubico-piv-tool). On amd64:
+#     /usr/lib/x86_64-linux-gnu/libykcs11.so
+#   macOS (brew):  /opt/homebrew/lib/libykcs11.dylib        (yubico-piv-tool)
+pkcs11_module = "/usr/lib/x86_64-linux-gnu/libykcs11.so"
+
+# Full certificate chain (leaf + intermediates) in PEM. Public data, but keep
+# it next to the daemon, not in git.
+cert_file = "/etc/signerd/chain.pem"
+
+# PKCS#11 key URI for osslsigncode -key. Default is PIV slot 9A.
+#key_id = "pkcs11:id=%01"
+
+# jsign backend only: certificate alias on the token.
+#alias = "X.509 Certificate for PIV Authentication"
+
+# Token user PIN. Prefer SIGNERD_PIN or pin_file over writing it here.
+# NEVER the PUK, and never store it in a repository.
+#pin = ""
+#pin_file = "/run/secrets/signerd_pin"
+
+# RFC 3161 timestamp authority. SSL.com's ECDSA endpoint is the default.
+# Use http://ts.ssl.com/legacy if a consumer tool rejects ECDSA timestamps.
+#timestamp_url = "http://ts.ssl.com"
+
+# Default Authenticode fields; callers may override per request.
+#name = "My Application"
+#url = "https://app.example.com"
+
+# Loopback OIDC skip. Default false. Enable only for an SSH-tunnel operator
+# workflow; any local process that can reach the listen address can then sign.
+#allow_unauthenticated_loopback = false
+
+# Health-check command run by GET /health (program + args). The default is a
+# PIN-free pkcs11-tool certificate listing against pkcs11_module. Health also
+# runs the signing tool first; the probe must print "Certificate Object" or
+# it is treated as absent. Override to assert a specific slot or label.
+#health_command = [
+#  "pkcs11-tool",
+#  "--module", "/usr/lib/x86_64-linux-gnu/libykcs11.so",
+#  "--list-objects", "--type", "cert",
+#]
+
+[github]
+  # OIDC gate for remote callers. GitHub Actions callers must
+  # request their token with this audience; conventionally your public URL.
+  audience = "https://sign.example.com"
+
+  # Fail-closed allowlist. Empty means remote signing is DISABLED.
+  # Repository-level only: any branch/tag/PR workflow of an allowlisted
+  # repo with id-token: write can sign. There is no ref pin in v1.
+  allowed_repositories = [
+    # "Owner/repo",
+  ]
+
+  # Only change this for GitHub Enterprise Server.
+  #issuer = "https://token.actions.githubusercontent.com"

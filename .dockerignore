@@ -1,0 +1,28 @@
+.git
+.gitignore
+dist
+
+# Signing material must never enter the build context or an image layer, at any
+# depth. COPY . . would otherwise pull in nested files like config/client.key.
+secrets
+**/secrets
+*pin*
+**/*pin*
+*.pem
+**/*.pem
+*.key
+**/*.key
+*.crt
+**/*.crt
+*.p12
+**/*.p12
+*.pfx
+**/*.pfx
+signerd.toml
+**/signerd.toml
+
+# Signable/build artifacts.
+*.exe
+**/*.exe
+*.msi
+**/*.msi

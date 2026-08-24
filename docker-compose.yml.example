@@ -1,0 +1,61 @@
+# golift/codesign example compose file.
+#
+# Layout: signerd joins the reverse proxy's Docker network (SWAG's, for
+# example) so nginx can proxy_pass to http://signerd:8750, and additionally
+# publishes on the HOST LOOPBACK ONLY for operator SSH tunnels.
+#
+# NEVER publish "8750:8750" or "0.0.0.0:8750:8750". A LAN peer talking
+# straight to signerd bypasses the nginx mTLS gate.
+#
+# Loopback caveat in bridge mode: connections arriving through the published
+# 127.0.0.1 port reach signerd from the Docker gateway address, not from
+# loopback, so the daemon still demands OIDC even if
+# allow_unauthenticated_loopback is on. For the unsupported operator
+# SSH-tunnel workflow (docs/local-signing.md) either use network_mode: host
+# (common on unRAID) or fall back to docker exec; both are covered in that
+# doc. The skip flag trusts *any* local process on that loopback port, not
+# just SSH.
+
+services:
+  signerd:
+    image: ghcr.io/golift/codesign:latest # or build: .
+    container_name: signerd
+    restart: unless-stopped
+    networks:
+      - swag
+    ports:
+      - "127.0.0.1:8750:8750" # host loopback ONLY; operator SSH tunnels.
+    environment:
+      SIGNERD_LISTEN: 0.0.0.0:8750 # container network only; see ports above.
+      SIGNERD_CERT_FILE: /config/chain.pem
+      SIGNERD_PIN_FILE: /run/secrets/signerd_pin
+      SIGNERD_NAME: My Application
+      SIGNERD_URL: https://app.example.com
+      SIGNERD_GITHUB_AUDIENCE: https://sign.example.com
+      SIGNERD_GITHUB_ALLOWED_REPOSITORIES_0: Owner/repo
+      #SIGNERD_GITHUB_ALLOWED_REPOSITORIES_1: Owner/other-repo
+    volumes:
+      - ./config:/config:ro
+    secrets:
+      - signerd_pin
+    devices:
+      # The YubiKey CCID interface. Find it with: lsusb -d 1050:
+      # Bus and device numbers CHANGE across reboots and replugs; prefer a
+      # udev rule or unRAID extra-parameters. See docs/docker-usb.md.
+      # NEVER pass the whole USB bus: on unRAID that includes the boot flash.
+      - /dev/bus/usb/001/004
+    # Alternative on unRAID: comment out `networks` and `ports` and use host
+    # networking instead. Then SIGNERD_LISTEN=127.0.0.1:8750 is a real
+    # loopback bind (tunnels work if allow_unauthenticated_loopback is on).
+    # A bridge-networked SWAG container cannot reach a host-loopback bind:
+    # host mode is SSH-tunnel/local only unless nginx also uses host
+    # networking. Prefer the default bridge layout above for the public proxy.
+    #network_mode: host
+
+networks:
+  swag:
+    external: true
+
+secrets:
+  signerd_pin:
+    file: ./secrets/signerd_pin.txt # gitignored; one line, PIV user PIN. chmod 0600.

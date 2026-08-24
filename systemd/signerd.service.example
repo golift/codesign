@@ -1,0 +1,54 @@
+# golift/codesign systemd unit, for Linux hosts that run signerd without
+# Docker. Install signerd to /usr/local/bin, the config to
+# /etc/signerd/signerd.toml, and this file to
+# /etc/systemd/system/signerd.service.
+#
+# The host needs pcscd + libccid running (the token's PC/SC stack) and the
+# PKCS#11 module: Debian/Ubuntu package ykcs11 (from source yubico-piv-tool),
+# which installs /usr/lib/<triplet>/libykcs11.so.
+
+[Unit]
+Description=Remote Authenticode signing daemon (golift.io/codesign)
+Documentation=https://github.com/golift/codesign
+After=network-online.target pcscd.service
+Wants=network-online.target
+Requires=pcscd.service
+
+[Service]
+Type=simple
+# Run as an unprivileged user that is allowed to talk to pcscd.
+User=signerd
+Group=signerd
+ExecStart=/usr/local/bin/signerd --config /etc/signerd/signerd.toml
+
+# PIN options, pick one (never the PUK):
+#   1. pin_file in signerd.toml pointing at a root:signerd 0640 file.
+#   2. An EnvironmentFile with SIGNERD_PIN=..., chmod 0600:
+#EnvironmentFile=/etc/signerd/env
+
+Restart=on-failure
+RestartSec=5
+
+# Hardening. signerd talks to pcscd over the /run socket, not /dev, so
+# PrivateDevices is safe. AF_NETLINK is required for DNS to the timestamp
+# server. SystemCallFilter can be commented out if a Go or osslsigncode
+# syscall is blocked on your systemd version.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+LockPersonality=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,15 @@
+*~
+*.DS_Store
+*.exe
+*.msi
+*.signed
+*.pem
+*.crt
+*.key
+*.p12
+*.pfx
+/codesign
+/signerd
+/dist/
+signerd.toml
+/secrets/

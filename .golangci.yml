@@ -1,0 +1,60 @@
+version: '2'
+linters:
+  default: all
+  disable:
+    # unused
+    - nlreturn
+    - exhaustruct
+    - exhaustruct_v5
+    - depguard
+    - nonamedreturns
+    - forbidigo
+    - wsl
+    - goconst
+    - gomodguard
+  exclusions:
+    rules:
+      - linters:
+          - funlen
+          - goconst
+          - wsl
+          - errcheck
+          - err113
+          - gochecknoglobals
+        path: .+_test.go
+
+  settings:
+    gosec:
+      excludes:
+        - G304
+        - G115
+        # Signing means reading and writing file paths that arrive at runtime.
+        - G703
+    gocritic:
+      enable-all: true
+      disabled-checks:
+        - whyNoLint
+        - commentedOutCode
+      settings:
+        unnamedResult:
+          checkExported: true
+    errcheck:
+      check-type-assertions: true
+      check-blank: false
+      disable-default-exclusions: false
+      exclude-functions:
+        - (*os.File).Close
+        - os.RemoveAll
+        - os.Remove
+        - (io.Closer).Close
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  fix: true
+formatters:
+  enable:
+    - gci
+    - gofmt
+    - gofumpt
+    - goimports
