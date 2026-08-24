@@ -35,16 +35,21 @@ FROM debian:bookworm-slim
 # yubico-piv-tool, https://packages.debian.org/bookworm/ykcs11) provides
 # libykcs11.so; osslsigncode is the default signing backend; opensc supplies
 # pkcs11-tool for the default PIN-free health probe.
+# passwd provides groupadd/useradd (not guaranteed on slim + no-install-recommends).
+# setpriv drops to the signerd user after pcscd starts. pcscd group lets that
+# user talk to /run/pcscd/pcscd.comm.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         libccid \
         opensc \
         osslsigncode \
+        passwd \
         pcscd \
+        setpriv \
         ykcs11 \
     && groupadd --system signerd \
-    && useradd --system --gid signerd --no-create-home --home /nonexistent \
-        --shell /usr/sbin/nologin signerd \
+    && useradd --system --gid signerd --groups pcscd --no-create-home \
+        --home /nonexistent --shell /usr/sbin/nologin signerd \
     && rm -rf /var/lib/apt/lists/*
 
 # Optional jsign backend (uncomment to bake it in):

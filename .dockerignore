@@ -18,6 +18,8 @@ secrets
 **/*.p12
 *.pfx
 **/*.pfx
+signerd.toml
+**/signerd.toml
 
 # Signable/build artifacts.
 *.exe

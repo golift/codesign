@@ -46,9 +46,10 @@ services:
       - /dev/bus/usb/001/004
     # Alternative on unRAID: comment out `networks` and `ports` and use host
     # networking instead. Then SIGNERD_LISTEN=127.0.0.1:8750 is a real
-    # loopback bind (tunnels work if allow_unauthenticated_loopback is on),
-    # and nginx cannot reach it over the Docker network (its $codesign must
-    # target the host).
+    # loopback bind (tunnels work if allow_unauthenticated_loopback is on).
+    # A bridge-networked SWAG container cannot reach a host-loopback bind:
+    # host mode is SSH-tunnel/local only unless nginx also uses host
+    # networking. Prefer the default bridge layout above for the public proxy.
     #network_mode: host
 
 networks:

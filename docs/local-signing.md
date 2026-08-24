@@ -42,7 +42,9 @@ Options:
 1. **network_mode: host** for the signerd container, with
    `SIGNERD_LISTEN=127.0.0.1:8750` and `allow_unauthenticated_loopback`.
    The loopback bind is real, tunnels work, and nothing is exposed to the
-   LAN. On unRAID this is often the simplest.
+   LAN. On unRAID this is often the simplest. A SWAG container on the
+   default bridge **cannot** reach that loopback bind; host mode is
+   SSH-tunnel/local only unless nginx also uses host networking.
 2. **docker exec fallback** — copy the file *into* the container with
    `docker cp`, sign it in place there (the image ships the CLI), then copy it
    back out. This needs no shared bind mount:

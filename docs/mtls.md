@@ -9,14 +9,25 @@ good fit for a homelab.
 
 ## Issue a client certificate
 
+A default step-ca provisioner caps TLS certificates at **24 hours**, so a
+year-long `--not-after 8760h` is rejected until you raise
+`maxTLSCertDuration` on the authority/provisioner. Ninety days is a
+reasonable GitHub-secret rotation window once that cap is raised:
+
+```jsonc
+// in the provisioner (ca.json), then restart step-ca:
+"maxTLSCertDuration": "2160h"
+```
+
 ```bash
 # On a machine with step configured against your CA:
 step ca certificate "github-codesign" client.crt client.key \
-  --san github-codesign --not-after 8760h
+  --san github-codesign --not-after 2160h
 ```
 
+Without the provisioner change, omit `--not-after` (24h) and rotate often.
 Keep the lifetime long enough that rotation is a scheduled chore, short
-enough that a leak has a horizon (a year is a reasonable start).
+enough that a leak has a horizon.
 
 ## nginx side
 
@@ -64,7 +75,7 @@ Issue a new pair, update the secrets, verify a workflow run, then revoke the
 old cert (or just let it expire if your window is short):
 
 ```bash
-step ca certificate "github-codesign" client-new.crt client-new.key --not-after 8760h
+step ca certificate "github-codesign" client-new.crt client-new.key --not-after 2160h
 gh secret set CODESIGN_CLIENT_CERT -o your-org --visibility all < client-new.crt
 gh secret set CODESIGN_CLIENT_KEY  -o your-org --visibility all < client-new.key
 ```
