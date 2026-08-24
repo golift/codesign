@@ -1,6 +1,6 @@
 name: Go Lift Code Sign
 author: Go Lift
-description: Authenticode-sign Windows PE/MSI via remote YubiKey-backed signerd. Requires id-token: write.
+description: Authenticode-sign Windows PE/MSI via remote YubiKey-backed signerd. Requires id-token write.
 branding:
   icon: edit-3
   color: blue
