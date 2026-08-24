@@ -70,8 +70,12 @@ checksum:
 
 # Keyless Sigstore signature over checksums.txt. Cosign v3 writes a single
 # bundle (cert + signature + transparency proof) instead of separate .pem/.sig
-# files. Verify with:
-#   cosign verify-blob --bundle checksums.txt.sigstore.json checksums.txt
+# files. Cosign 3 keyless verify requires an identity and issuer; without them
+# the command fails before checking the blob:
+#   cosign verify-blob --bundle checksums.txt.sigstore.json \
+#     --certificate-identity-regexp '^https://github.com/golift/codesign/' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+#     checksums.txt
 signs:
   - cmd: cosign
     signature: '${artifact}.sigstore.json'
