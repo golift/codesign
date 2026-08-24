@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>signerd</Name>
+  <Repository>ghcr.io/golift/codesign:v1</Repository>
+  <Registry>https://ghcr.io/golift/codesign</Registry>
+  <Network>bridge</Network>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/golift/codesign/issues</Support>
+  <Project>https://github.com/golift/codesign</Project>
+  <Overview>
+YubiKey-backed Authenticode signer (golift/codesign). Put this container on the same Docker network as your reverse proxy so nginx can proxy_pass to http://signerd:8750. Extra Parameters already publish 127.0.0.1:8750 for operator SSH tunnels; do not publish 0.0.0.0. Pass only the YubiKey CCID device (VID 1050). Bus and device numbers change on reboot; never pass a whole USB bus (on unRAID that includes the boot flash). Privileged is not required. PIN and cert chain live under /config, not in git. See docs/docker-usb.md.
+  </Overview>
+  <Category>Tools:</Category>
+  <ExtraParams>--publish 127.0.0.1:8750:8750</ExtraParams>
+  <Icon>https://github.com/golift.png</Icon>
+  <Config Name="appdata" Target="/config" Default="/mnt/user/appdata/signerd/" Mode="rw" Description="chain.pem plus an optional pin file (chmod 0600). Container Path: /config" Type="Path" Display="always" Required="true" Mask="false"/>
+  <Config Name="YubiKey CCID" Target="" Default="" Mode="" Description="lsusb -d 1050: then /dev/bus/usb/BBB/DDD. Numbers change on reboot/replug. Never the unRAID boot flash." Type="Device" Display="always" Required="true" Mask="false">/dev/bus/usb/001/004</Config>
+  <Config Name="Listen" Target="SIGNERD_LISTEN" Default="0.0.0.0:8750" Description="Container listen address. Host publish is loopback-only via Extra Parameters." Type="Variable" Display="advanced" Required="false" Mask="false">0.0.0.0:8750</Config>
+  <Config Name="Cert chain" Target="SIGNERD_CERT_FILE" Default="/config/chain.pem" Description="Full Authenticode chain (leaf + intermediates), PEM." Type="Variable" Display="always" Required="true" Mask="false">/config/chain.pem</Config>
+  <Config Name="PIN file" Target="SIGNERD_PIN_FILE" Default="/config/pin" Description="PIV user PIN, one line. chmod 0600. Never the PUK." Type="Variable" Display="always" Required="true" Mask="true">/config/pin</Config>
+  <Config Name="Authenticode name" Target="SIGNERD_NAME" Default="" Description="Default Authenticode program name." Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="Authenticode URL" Target="SIGNERD_URL" Default="" Description="Default Authenticode program URL." Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="OIDC audience" Target="SIGNERD_GITHUB_AUDIENCE" Default="https://sign.example.com" Description="Must match the public sign URL GitHub Actions request tokens for." Type="Variable" Display="always" Required="true" Mask="false">https://sign.example.com</Config>
+  <Config Name="Allowlisted repo" Target="SIGNERD_GITHUB_ALLOWED_REPOSITORIES_0" Default="" Description="Owner/repo allowed to sign. Empty allowlist signs nothing remotely. Add _1, _2, ... for more repos." Type="Variable" Display="always" Required="false" Mask="false"/>
+</Container>

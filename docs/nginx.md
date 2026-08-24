@@ -1,17 +1,17 @@
 # nginx / SWAG deployment notes
 
-`nginx/sign.conf` is written for a
+`examples/nginx/sign.conf` is written for a
 [SWAG](https://docs.linuxserver.io/general/swag/) (linuxserver.io) setup with
 a wildcard certificate, but any nginx works — replace the `include` lines
 with your own ssl/proxy boilerplate.
 
 ## Checklist
 
-1. Copy `nginx/sign.conf` to your site-confs directory as `codesign.conf`
+1. Copy `examples/nginx/sign.conf` to your site-confs directory as `codesign.conf`
    (SWAG: `/config/nginx/site-confs/`).
 2. Put your client CA at `/config/keys/client-ca.crt` (see mtls.md).
 3. The example sets `$codesign` **inline** to the Docker-network hostname.
-   Edit that one line in `sign.conf` for your deploy. If you prefer a
+   Edit that one line in `examples/nginx/sign.conf` for your deploy. If you prefer a
    gitignored variables file, delete the inline `set` (a later `set` wins,
    so leaving both is confusing):
 

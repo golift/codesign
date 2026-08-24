@@ -31,7 +31,7 @@ enough that a leak has a horizon.
 
 ## nginx side
 
-`nginx/sign.conf` in this repository already contains the lines that matter:
+`examples/nginx/sign.conf` in this repository already contains the lines that matter:
 
 ```nginx
 ssl_client_certificate /config/keys/client-ca.crt;  # your CA root/intermediate
