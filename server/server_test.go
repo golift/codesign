@@ -582,12 +582,29 @@ func TestHealthTimesOutWaitingForSign(t *testing.T) {
 		HealthTimeout: 50 * time.Millisecond,
 	}).Handler()
 
+	done := make(chan struct{})
+
 	go func() {
+		defer close(done)
+
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, signRequest(t.Context(), peBody, map[string]string{
 			"Authorization": "Bearer " + goodToken,
 		}))
 	}()
+
+	// Release the signer and wait before t.TempDir cleanup. Otherwise the
+	// still-running upload leaves files under WorkDir and macOS fails with
+	// "directory not empty".
+	t.Cleanup(func() {
+		close(hold.release)
+
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Error("sign request did not finish after release")
+		}
+	})
 
 	<-hold.started
 
@@ -595,6 +612,4 @@ func TestHealthTimesOutWaitingForSign(t *testing.T) {
 	healthReq := httptest.NewRequestWithContext(t.Context(), http.MethodGet, codesign.HealthPath, http.NoBody)
 	handler.ServeHTTP(recorder, healthReq)
 	assert.Equal(t, http.StatusServiceUnavailable, recorder.Code)
-
-	close(hold.release)
 }
