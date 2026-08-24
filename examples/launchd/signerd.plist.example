@@ -10,7 +10,9 @@
 
   Config goes in ~/Library/Application Support/signerd/signerd.toml with
   pkcs11_module = "/opt/homebrew/lib/libykcs11.dylib" (brew yubico-piv-tool).
-  Replace USER in StandardOutPath/StandardErrorPath; launchd does not expand ~.
+  Point ProgramArguments at the signerd binary (`go install` lands in
+  ~/go/bin/signerd; a Homebrew or /usr/local install may differ). Replace USER
+  in StandardOutPath/StandardErrorPath; launchd does not expand ~.
   Logs go to ~/Library/Logs, not /tmp (world-writable).
 -->
 <plist version="1.0">

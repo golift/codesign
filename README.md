@@ -63,10 +63,12 @@ and issue a client certificate that chains to the proxy CA. Server-side docs:
 Start with [examples/signerd.toml.example](examples/signerd.toml.example):
 
 -   **Docker** (recommended): [Dockerfile](Dockerfile) +
-    [docker-compose.yml.example](docker-compose.yml.example), USB notes in
+    [examples/docker-compose.yml.example](examples/docker-compose.yml.example), USB notes in
     [docs/docker-usb.md](docs/docker-usb.md).
--   **systemd**: [systemd/signerd.service.example](systemd/signerd.service.example).
--   **launchd** (macOS): [launchd/signerd.plist.example](launchd/signerd.plist.example).
+-   **unRAID**: [examples/unraid/signerd.xml](examples/unraid/signerd.xml) (Community Applications / user template).
+-   **systemd**: [examples/systemd/signerd.service.example](examples/systemd/signerd.service.example).
+-   **launchd** (macOS): [examples/launchd/signerd.plist.example](examples/launchd/signerd.plist.example).
+-   **nginx**: [examples/nginx/sign.conf](examples/nginx/sign.conf).
 
 A `v1.0.0` release plants the floating `v1` tag the Action tracks.
 

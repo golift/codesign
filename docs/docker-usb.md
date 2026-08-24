@@ -28,6 +28,11 @@ or on `docker run` / unRAID **Extra Parameters**:
 --device=/dev/bus/usb/001/004
 ```
 
+An unRAID user-template XML lives at
+[examples/unraid/signerd.xml](../examples/unraid/signerd.xml). It already
+publishes `127.0.0.1:8750` and has a Device field for the CCID node. Put the
+container on the reverse-proxy Docker network. Do not paste a USB path into git.
+
 ## Bus/device numbers are not stable
 
 They change on reboot and replug. Options, most robust first:
