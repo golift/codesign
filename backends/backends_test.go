@@ -3,6 +3,7 @@ package backends_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,17 +36,32 @@ func (f *fakeRunner) run(_ context.Context, command string, args ...string) ([]b
 	// osslsigncode writes -out itself. Mimic that so publishSigned can rename.
 	for i, arg := range args {
 		if arg == "-out" && i+1 < len(args) {
-			path := args[i+1]
-			if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-				err = os.WriteFile(path, []byte("signed"), 0o600)
-				if err != nil {
-					return f.output, err
-				}
+			err := writeFakeOut(args[i+1])
+			if err != nil {
+				return f.output, err
 			}
 		}
 	}
 
 	return f.output, nil
+}
+
+func writeFakeOut(path string) error {
+	_, err := os.Stat(path)
+	if err == nil {
+		return nil
+	}
+
+	if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("checking staging -out: %w", err)
+	}
+
+	err = os.WriteFile(path, []byte("signed"), 0o600)
+	if err != nil {
+		return fmt.Errorf("writing staging -out: %w", err)
+	}
+
+	return nil
 }
 
 func TestOSSLSigncodeSign(t *testing.T) {
@@ -105,9 +121,11 @@ func TestOSSLSigncodeOutDoesNotExist(t *testing.T) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "in.exe")
 	output := filepath.Join(dir, "out.exe")
+
 	require.NoError(t, os.WriteFile(input, []byte("MZ"), 0o600))
 
 	var sawOut string
+
 	backend := backends.NewOSSLSigncode(&backends.OSSLConfig{
 		PKCS11Module: "/usr/lib/libykcs11.so",
 		CertFile:     "/etc/signerd/chain.pem",
