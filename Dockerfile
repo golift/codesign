@@ -35,12 +35,15 @@ FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639
 # yubico-piv-tool, https://packages.debian.org/bookworm/ykcs11) provides
 # libykcs11.so; osslsigncode is the default signing backend; opensc supplies
 # pkcs11-tool for the default PIN-free health probe.
+# osslsigncode 2.5 still loads keys through OpenSSL's pkcs11 engine
+# (otherwise: Failed to find and load 'pkcs11' engine).
 # passwd provides groupadd/useradd. setpriv is already in essential util-linux
 # on bookworm (/usr/bin/setpriv); there is no setpriv package until trixie.
 # Debian's pcscd does not create a pcscd group; the socket is world-accessible.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         libccid \
+        libengine-pkcs11-openssl \
         opensc \
         osslsigncode \
         passwd \

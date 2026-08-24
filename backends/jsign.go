@@ -24,7 +24,9 @@ type JsignConfig struct {
 	// passed as --storepass file:<path> so it never appears in process argv.
 	// Never the PUK.
 	PIN string
-	// TimestampURL defaults to DefaultTimestampURL.
+	// TimestampURL defaults to DefaultTimestampURL. jsign is always passed
+	// --tsmode RFC3161 to match that endpoint (Authenticode timestamping
+	// against ts.ssl.com fails).
 	TimestampURL string
 	// Digest defaults to SHA-384 to match an ECC P-384 signing key.
 	Digest string
@@ -110,6 +112,7 @@ func (s *Jsign) Sign(ctx context.Context, req *signer.Request) error {
 			"--certfile", s.config.CertFile,
 			"--alg", s.config.Digest,
 			"--tsaurl", s.config.TimestampURL,
+			"--tsmode", "RFC3161",
 		}
 
 		return withPINFile(s.config.PIN, func(pinPath string) error {

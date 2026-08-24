@@ -61,6 +61,9 @@ They change on reboot and replug. Options, most robust first:
 ```bash
 docker exec signerd sh -c 'pcsc_scan -r 2>/dev/null || echo no pcsc_scan; ls /run/pcscd'
 docker exec signerd osslsigncode --version
+# osslsigncode 2.5 needs OpenSSL's pkcs11 engine (libengine-pkcs11-openssl
+# in this image). GET /health only runs --version + pkcs11-tool; it does
+# not prove the engine can sign.
 curl -fsS http://127.0.0.1:8750/health   # from the host loopback publish
 ```
 
