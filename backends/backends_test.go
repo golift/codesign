@@ -258,6 +258,8 @@ func TestJsignSign(t *testing.T) {
 	require.Len(t, runner.calls, 1)
 	assert.Equal(t, "/usr/bin/jsign", runner.calls[0][0])
 	assert.Contains(t, runner.calls[0], "--alias")
+	assert.Contains(t, runner.calls[0], "--tsmode")
+	assert.Contains(t, runner.calls[0], "RFC3161")
 	assert.NotContains(t, runner.calls[0], "123456", "PIN must not appear in argv")
 	assert.NotEqual(t, output, runner.calls[0][len(runner.calls[0])-1], "jsign must sign a staging file")
 	assert.Equal(t, dir, filepath.Dir(runner.calls[0][len(runner.calls[0])-1]))
