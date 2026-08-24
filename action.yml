@@ -1,10 +1,6 @@
 name: Go Lift Code Sign
 author: Go Lift
-description: >-
-  Authenticode-sign Windows PE/MSI files against a remote YubiKey-backed
-  signing service (golift.io/codesign signerd). The calling job MUST set
-  permissions: id-token: write so the action can fetch a GitHub OIDC token;
-  the signing service verifies that token against its repository allowlist.
+description: Authenticode-sign Windows PE/MSI via remote YubiKey-backed signerd. Requires id-token: write.
 branding:
   icon: edit-3
   color: blue
