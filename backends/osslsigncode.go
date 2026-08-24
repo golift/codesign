@@ -3,6 +3,7 @@ package backends
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"golift.io/codesign/signer"
 )
@@ -101,6 +102,14 @@ func (s *OSSLSigncode) Sign(ctx context.Context, req *signer.Request) error {
 
 	return withPINFile(s.config.PIN, func(pinPath string) error {
 		return publishSigned(req.OutputPath, func(staging string) error {
+			// osslsigncode 2.5 refuses to overwrite -out ("Failed to create
+			// file"). publishSigned's CreateTemp reserves a unique name by
+			// creating an empty file; remove it so the tool can write.
+			err := os.Remove(staging)
+			if err != nil {
+				return fmt.Errorf("osslsigncode sign: clearing staging file: %w", err)
+			}
+
 			args := []string{
 				"sign",
 				"-pkcs11module", s.config.PKCS11Module,
@@ -124,7 +133,7 @@ func (s *OSSLSigncode) Sign(ctx context.Context, req *signer.Request) error {
 
 			args = append(args, "-in", req.InputPath, "-out", staging)
 
-			_, err := s.config.Run(ctx, s.config.Command, args...)
+			_, err = s.config.Run(ctx, s.config.Command, args...)
 			if err != nil {
 				return fmt.Errorf("osslsigncode sign: %w", err)
 			}

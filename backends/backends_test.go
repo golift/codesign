@@ -3,6 +3,7 @@ package backends_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,8 +29,39 @@ func (f *fakeRunner) run(_ context.Context, command string, args ...string) ([]b
 	defer f.mu.Unlock()
 
 	f.calls = append(f.calls, append([]string{command}, args...))
+	if f.err != nil {
+		return f.output, f.err
+	}
 
-	return f.output, f.err
+	// osslsigncode writes -out itself. Mimic that so publishSigned can rename.
+	for i, arg := range args {
+		if arg == "-out" && i+1 < len(args) {
+			err := writeFakeOut(args[i+1])
+			if err != nil {
+				return f.output, err
+			}
+		}
+	}
+
+	return f.output, nil
+}
+
+func writeFakeOut(path string) error {
+	_, err := os.Stat(path)
+	if err == nil {
+		return nil
+	}
+
+	if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("checking staging -out: %w", err)
+	}
+
+	err = os.WriteFile(path, []byte("signed"), 0o600)
+	if err != nil {
+		return fmt.Errorf("writing staging -out: %w", err)
+	}
+
+	return nil
 }
 
 func TestOSSLSigncodeSign(t *testing.T) {
@@ -81,6 +113,36 @@ func TestOSSLSigncodeSign(t *testing.T) {
 	assert.Equal(t, dir, filepath.Dir(got[len(got)-1]), "tool must write a sibling staging file")
 	assert.NotEqual(t, output, got[len(got)-1], "OutputPath must not be the tool -out")
 	assert.NotContains(t, got, "123456", "PIN must not appear in argv")
+}
+
+func TestOSSLSigncodeOutDoesNotExist(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	input := filepath.Join(dir, "in.exe")
+	output := filepath.Join(dir, "out.exe")
+
+	require.NoError(t, os.WriteFile(input, []byte("MZ"), 0o600))
+
+	var sawOut string
+
+	backend := backends.NewOSSLSigncode(&backends.OSSLConfig{
+		PKCS11Module: "/usr/lib/libykcs11.so",
+		CertFile:     "/etc/signerd/chain.pem",
+		Run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			sawOut = args[len(args)-1]
+			_, err := os.Stat(sawOut)
+			require.ErrorIs(t, err, os.ErrNotExist, "osslsigncode 2.5 cannot overwrite -out")
+			require.NoError(t, os.WriteFile(sawOut, []byte("signed"), 0o600))
+
+			return nil, nil
+		},
+	})
+
+	err := backend.Sign(t.Context(), &signer.Request{InputPath: input, OutputPath: output})
+	require.NoError(t, err)
+	require.FileExists(t, output)
+	assert.NotEqual(t, output, sawOut)
 }
 
 func TestOSSLSigncodeDefaults(t *testing.T) {
