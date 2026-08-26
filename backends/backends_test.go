@@ -319,6 +319,8 @@ func TestJsignSign(t *testing.T) {
 
 	require.Len(t, runner.calls, 1)
 	assert.Equal(t, "/usr/bin/jsign", runner.calls[0][0])
+	assert.Contains(t, runner.calls[0], "--storetype")
+	assert.Contains(t, runner.calls[0], "YUBIKEY")
 	assert.Contains(t, runner.calls[0], "--alias")
 	assert.Contains(t, runner.calls[0], "--tsmode")
 	assert.Contains(t, runner.calls[0], "RFC3161")
@@ -336,6 +338,32 @@ func TestJsignSign(t *testing.T) {
 
 	require.Positive(t, passAt)
 	assert.True(t, strings.HasPrefix(runner.calls[0][passAt+1], "file:"))
+}
+
+func TestJsignSignPIVStoreType(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	input := filepath.Join(dir, "app.exe")
+	output := filepath.Join(dir, "app.exe.signed")
+
+	require.NoError(t, os.WriteFile(input, []byte("MZ unsigned"), 0o600))
+
+	runner := &fakeRunner{}
+	backend := backends.NewJsign(&backends.JsignConfig{
+		CertFile:  "/etc/signerd/chain.pem",
+		StoreType: "PIV",
+		Run:       runner.run,
+	})
+	assert.Equal(t, "PIV", backend.StoreType())
+
+	err := backend.Sign(t.Context(), &signer.Request{InputPath: input, OutputPath: output})
+	require.NoError(t, err)
+
+	require.Len(t, runner.calls, 1)
+	assert.Contains(t, runner.calls[0], "--storetype")
+	assert.Contains(t, runner.calls[0], "PIV")
+	assert.NotContains(t, runner.calls[0], "YUBIKEY")
 }
 
 func TestJsignSignMissingInput(t *testing.T) {

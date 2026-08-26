@@ -4,6 +4,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -27,6 +28,23 @@ func TestBuildSignerJsignPassesModule(t *testing.T) {
 	assert.Equal(t, []string{
 		"pkcs11-tool", "--module", module, "--list-objects", "--type", "cert",
 	}, jsign.HealthCommand())
+	assert.Equal(t, "YUBIKEY", jsign.StoreType())
+}
+
+func TestBuildSignerJsignPassesStoreType(t *testing.T) {
+	t.Parallel()
+
+	backend, err := buildSigner(&Config{
+		Backend:       "jsign",
+		StoreType:     "PIV",
+		HealthCommand: []string{"ykman", "piv", "info"},
+		CertFile:      filepath.Join(t.TempDir(), "chain.pem"),
+	})
+	require.NoError(t, err)
+
+	jsign, ok := backend.(*backends.Jsign)
+	require.True(t, ok)
+	assert.Equal(t, "PIV", jsign.StoreType())
 }
 
 func TestValidateConfig(t *testing.T) {
@@ -133,4 +151,77 @@ func TestBuildSignerFakeRequiresEnv(t *testing.T) {
 	backend, err := buildSigner(&Config{Backend: "fake"})
 	require.NoError(t, err)
 	require.NotNil(t, backend)
+}
+
+func TestDefaultConfigCandidates(t *testing.T) {
+	t.Parallel()
+
+	candidates := defaultConfigCandidates()
+	require.NotEmpty(t, candidates)
+
+	for _, candidate := range candidates {
+		assert.Equal(t, configFileName, filepath.Base(candidate))
+	}
+
+	if runtime.GOOS == "windows" {
+		assert.NotContains(t, candidates, filepath.Join(unixSystemDir, configFileName))
+		assert.Equal(t, `ProgramData\signerd`, systemConfigHint())
+
+		programData := os.Getenv("ProgramData")
+		if programData != "" {
+			assert.Contains(t, candidates, filepath.Join(programData, "signerd", configFileName))
+		}
+
+		return
+	}
+
+	assert.Contains(t, candidates, filepath.Join(unixSystemDir, configFileName))
+	assert.Equal(t, unixSystemDir, systemConfigHint())
+}
+
+func TestLoadConfigStoreType(t *testing.T) {
+	path := filepath.Join(t.TempDir(), configFileName)
+	require.NoError(t, os.WriteFile(path, []byte("store_type = \"PKCS11\"\n"), 0o600))
+
+	t.Run("toml", func(t *testing.T) {
+		t.Setenv("SIGNERD_STORE_TYPE", "unused")
+		require.NoError(t, os.Unsetenv("SIGNERD_STORE_TYPE"))
+
+		config, err := loadConfig(path)
+		require.NoError(t, err)
+		assert.Equal(t, "PKCS11", config.StoreType)
+	})
+
+	t.Run("env", func(t *testing.T) {
+		empty := filepath.Join(t.TempDir(), configFileName)
+		require.NoError(t, os.WriteFile(empty, []byte("listen = \"127.0.0.1:8750\"\n"), 0o600))
+		t.Setenv("SIGNERD_STORE_TYPE", "PIV")
+
+		config, err := loadConfig(empty)
+		require.NoError(t, err)
+		assert.Equal(t, "PIV", config.StoreType)
+	})
+
+	t.Run("envOverridesTOML", func(t *testing.T) {
+		t.Setenv("SIGNERD_STORE_TYPE", "PIV")
+
+		config, err := loadConfig(path)
+		require.NoError(t, err)
+		assert.Equal(t, "PIV", config.StoreType)
+	})
+}
+
+func TestFirstExistingConfig(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "missing.toml")
+	present := filepath.Join(dir, "present.toml")
+
+	require.NoError(t, os.WriteFile(present, []byte("listen = \"127.0.0.1:8750\"\n"), 0o600))
+
+	assert.Empty(t, firstExistingConfig(nil))
+	assert.Empty(t, firstExistingConfig([]string{missing}))
+	assert.Equal(t, present, firstExistingConfig([]string{missing, present}))
+	assert.Equal(t, present, firstExistingConfig([]string{present, missing}))
 }

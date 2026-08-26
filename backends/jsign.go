@@ -12,7 +12,9 @@ import (
 type JsignConfig struct {
 	// Command is the jsign launcher. Defaults to "jsign".
 	Command string
-	// StoreType defaults to YUBIKEY, jsign's native PC/SC YubiKey store.
+	// StoreType defaults to YUBIKEY, jsign's native store that locates
+	// libykcs11. Set PIV to talk to the token over PC/SC without that DLL
+	// (the usual Windows setup).
 	StoreType string
 	// Alias selects the certificate on the token, for example
 	// "X.509 Certificate for PIV Authentication" for slot 9A.
@@ -164,4 +166,9 @@ func (s *Jsign) Health(ctx context.Context) error {
 // HealthCommand returns a copy of the PIN-free probe argv Health will run.
 func (s *Jsign) HealthCommand() []string {
 	return slices.Clone(s.config.HealthCommand)
+}
+
+// StoreType returns the jsign --storetype that Sign will pass.
+func (s *Jsign) StoreType() string {
+	return s.config.StoreType
 }
