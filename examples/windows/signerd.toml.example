@@ -1,0 +1,43 @@
+# signerd example configuration for a Windows host.
+#
+# Copy to %ProgramData%\signerd\signerd.toml (system default) or
+# %AppData%\signerd\signerd.toml, or pass --config.
+#
+# Every value may be overridden by an environment variable: SIGNERD_LISTEN,
+# SIGNERD_PIN, SIGNERD_GITHUB_AUDIENCE, SIGNERD_STORE_TYPE, and so on.
+
+listen = "127.0.0.1:8750"
+max_body_mib = 100
+
+# jsign + PIV is the Windows happy path: PC/SC, no libykcs11.dll.
+backend = "jsign"
+store_type = "PIV"
+# Slot 9A. Use "SIGNATURE" or "9c" if the code-signing cert is there.
+alias = "AUTHENTICATION"
+
+command = "jsign"
+
+cert_file = 'C:\ProgramData\signerd\chain.pem'
+pin_file = 'C:\ProgramData\signerd\pin'
+
+# PIN-free token probe. Nonempty ykman output is enough (this is not a
+# pkcs11-tool cert listing, so "Certificate Object" is not required).
+health_command = ["ykman", "piv", "info"]
+
+# RFC 3161 timestamp authority. SSL.com's ECDSA endpoint is the default.
+#timestamp_url = "http://ts.ssl.com"
+
+# Default Authenticode fields; callers may override per request.
+#name = "My Application"
+#url = "https://app.example.com"
+
+# Leave off unless you are doing an SSH-tunnel operator workflow. If a reverse
+# proxy on this box aims at loopback, enabling this skips OIDC for every
+# proxied request.
+#allow_unauthenticated_loopback = false
+
+[github]
+  audience = "https://sign.example.com"
+  allowed_repositories = [
+    # "Owner/repo",
+  ]

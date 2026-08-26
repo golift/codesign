@@ -1,12 +1,14 @@
 # signerd example configuration.
 #
 # Copy to one of:
-#   Linux:  /etc/signerd/signerd.toml  (or $XDG_CONFIG_HOME/signerd/signerd.toml)
-#   macOS:  ~/Library/Application Support/signerd/signerd.toml
+#   Linux:   /etc/signerd/signerd.toml  (or $XDG_CONFIG_HOME/signerd/signerd.toml)
+#   macOS:   ~/Library/Application Support/signerd/signerd.toml
+#   Windows: %ProgramData%\signerd\signerd.toml  (or %AppData%\signerd\signerd.toml)
 # or point at it with `signerd --config /path/to/signerd.toml`.
+# Windows operators: see examples/windows/signerd.toml.example (jsign + PIV).
 #
 # Every value may be overridden by an environment variable: SIGNERD_LISTEN,
-# SIGNERD_PIN, SIGNERD_GITHUB_AUDIENCE, and so on.
+# SIGNERD_PIN, SIGNERD_GITHUB_AUDIENCE, SIGNERD_STORE_TYPE, and so on.
 
 # Bind address. Keep the host part on loopback (or a container network that
 # sits behind an mTLS-terminating proxy). NEVER publish this raw to a LAN or
@@ -36,6 +38,9 @@ cert_file = "/etc/signerd/chain.pem"
 
 # jsign backend only: certificate alias on the token.
 #alias = "X.509 Certificate for PIV Authentication"
+# jsign --storetype. Empty defaults to YUBIKEY (needs libykcs11).
+# Windows hosts that skip that DLL should set PIV (see examples/windows).
+#store_type = "PIV"
 
 # Token user PIN. Prefer SIGNERD_PIN or pin_file over writing it here.
 # NEVER the PUK, and never store it in a repository.

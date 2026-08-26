@@ -8,7 +8,7 @@ key, because the key cannot be exported.
 ## Inventory (safe, read-only)
 
 ```bash
-brew install ykman            # macOS; apt/pipx elsewhere
+brew install ykman            # macOS; apt/pipx/WinGet elsewhere
 ykman piv info                # firmware, PIN retries, slot overview
 ykman piv certificates export 9a - | openssl x509 -noout -subject -dates -ext extendedKeyUsage
 ```

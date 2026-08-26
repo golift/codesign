@@ -1,0 +1,38 @@
+# golift/codesign example Caddyfile for a Windows host.
+#
+# Gate 1 of 2: mTLS. Clients without a certificate from your CA never reach
+# signerd. Gate 2 (GitHub OIDC) lives inside signerd.
+#
+# DNS: keep sign.example.com DNS-only in Cloudflare (grey cloud). The orange
+# cloud terminates TLS at Cloudflare and breaks client-certificate verification.
+#
+# SECURITY: never proxy to a loopback upstream if allow_unauthenticated_loopback
+# is enabled. Reach signerd on a private non-loopback address firewalled to
+# this proxy. With the skip left off (default), a loopback upstream still
+# demands OIDC; still prefer a non-loopback bind so the daemon sees the proxy
+# as a remote peer.
+#
+# Install Caddy, put your client CA at C:\ProgramData\signerd\client-ca.crt,
+# edit the reverse_proxy address, then run caddy from this file.
+
+sign.example.com {
+	request_body {
+		max_size 100MiB
+	}
+
+	tls {
+		client_auth {
+			mode require_and_verify
+			trust_pool file {
+				pem_file C:\ProgramData\signerd\client-ca.crt
+			}
+		}
+	}
+
+	reverse_proxy 10.0.0.10:8750 {
+		transport http {
+			read_timeout 300s
+			write_timeout 300s
+		}
+	}
+}

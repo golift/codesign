@@ -1,16 +1,18 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema-pro.json
 version: 2
 
 before:
   hooks:
     - go mod tidy
 
-# Two small CGO-free binaries. signerd runs on the box with the YubiKey
-# (Linux/unRAID/Docker or a Mac); codesign runs on CI runners and laptops.
-# No Windows signerd on purpose, and these artifacts are NOT
-# Authenticode-signed in v1 (chicken and egg). checksums.txt is signed
-# keyless with cosign (Sigstore). The Docker image is a second build of
-# the same commit (needs debian+pcscd); stamps use the git commit time so
-# tarball and image version strings match.
+# Two CGO-free binaries. signerd sits next to the YubiKey (Linux, macOS, or
+# Windows); codesign is the CLI the Action and operators run. Windows PE is
+# Authenticode-signed in a build hook when CODESIGN_URL is set (house
+# signerd). Darwin universal binaries are Apple-signed and notarized when
+# MACOS_SIGN_P12 is set (GoReleaser Pro / quill, works on Linux CI). Local
+# snapshots skip both. checksums.txt is still signed keyless with cosign.
+# The Docker image is a second build of the same commit (needs debian+pcscd);
+# stamps use the git commit time so tarball and image version strings match.
 builds:
   - id: signerd
     main: ./cmd/signerd
@@ -20,6 +22,7 @@ builds:
     goos:
       - linux
       - darwin
+      - windows
     goarch:
       - amd64
       - arm64
@@ -30,6 +33,9 @@ builds:
       - -X "golift.io/version.BuildDate={{.CommitDate}}"
       - -X "golift.io/version.Revision={{.FullCommit}}"
       - -X "golift.io/version.Branch={{.ShortCommit}} [{{.Branch}}]"
+    hooks:
+      post:
+        - cmd: bash .github/scripts/signexe.sh "{{ .Path }}"
   - id: codesign
     main: ./cmd/codesign
     binary: codesign
@@ -38,6 +44,7 @@ builds:
     goos:
       - linux
       - darwin
+      - windows
     goarch:
       - amd64
       - arm64
@@ -48,12 +55,46 @@ builds:
       - -X "golift.io/version.BuildDate={{.CommitDate}}"
       - -X "golift.io/version.Revision={{.FullCommit}}"
       - -X "golift.io/version.Branch={{.ShortCommit}} [{{.Branch}}]"
+    hooks:
+      post:
+        - cmd: bash .github/scripts/signexe.sh "{{ .Path }}"
+
+universal_binaries:
+  - id: signerd
+    ids: [signerd]
+    replace: true
+    name_template: signerd
+  - id: codesign
+    ids: [codesign]
+    replace: true
+    name_template: codesign
+
+# Sign + notarize the macOS universal binaries (quill; works on Linux CI).
+# Enabled only when MACOS_SIGN_P12 is set so local snapshots still work.
+notarize:
+  macos:
+    - enabled: '{{ isEnvSet "MACOS_SIGN_P12" }}'
+      ids:
+        - signerd
+        - codesign
+      sign:
+        certificate: "{{ .Env.MACOS_SIGN_P12 }}"
+        password: "{{ .Env.MACOS_SIGN_PASSWORD }}"
+      notarize:
+        issuer_id: "{{ .Env.MACOS_NOTARY_ISSUER_ID }}"
+        key_id: "{{ .Env.MACOS_NOTARY_KEY_ID }}"
+        key: "{{ .Env.MACOS_NOTARY_KEY }}"
+        wait: true
+        timeout: 20m
 
 archives:
   - id: signerd
     ids: [signerd]
     formats: ['tar.gz']
     name_template: 'signerd-{{ .Version }}.{{ .Os }}.{{ .Arch }}'
+    format_overrides:
+      - goos: windows
+        formats: ['zip']
     files:
       - src: LICENSE
         dst: LICENSE.txt
@@ -61,6 +102,9 @@ archives:
     ids: [codesign]
     formats: ['tar.gz']
     name_template: 'codesign-{{ .Version }}.{{ .Os }}.{{ .Arch }}'
+    format_overrides:
+      - goos: windows
+        formats: ['zip']
     files:
       - src: LICENSE
         dst: LICENSE.txt

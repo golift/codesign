@@ -11,7 +11,7 @@ This module provides:
 
 -   A composite GitHub Action (`uses: golift/codesign@v1`).
 -   `signerd` — HTTP daemon next to the YubiKey (`osslsigncode` or
-    [jsign](https://github.com/ebourg/jsign)), on Linux (Docker/systemd) or macOS (launchd).
+    [jsign](https://github.com/ebourg/jsign)), on Linux (Docker/systemd), macOS (launchd), or Windows (Task Scheduler).
 -   `codesign` — CLI and Go client library used by the Action.
 
 Remote requests require **both** gates:
@@ -47,8 +47,9 @@ jobs:
 
 `@v1` tracks a floating tag and silently picks up new Action code. Pin by
 commit SHA (`uses: golift/codesign@<sha>`) when you need a frozen install;
-that is also why release checksums are cosign-signed and the image ships
-SLSA provenance.
+that is also why release checksums are cosign-signed, Windows PE in the
+GitHub Release is Authenticode-signed, darwin universals are notarized, and
+the image ships SLSA provenance.
 
 Files are replaced in place. The operator must allowlist your `Owner/repo`
 and issue a client certificate that chains to the proxy CA. Server-side docs:
@@ -57,6 +58,7 @@ and issue a client certificate that chains to the proxy CA. Server-side docs:
 -   mTLS: [docs/mtls.md](docs/mtls.md)
 -   nginx: [docs/nginx.md](docs/nginx.md)
 -   YubiKey facts: [docs/yubikey.md](docs/yubikey.md)
+-   Windows host: [docs/windows.md](docs/windows.md)
 
 ## Deploying the daemon
 
@@ -68,6 +70,8 @@ Start with [examples/signerd.toml.example](examples/signerd.toml.example):
 -   **unRAID**: [examples/unraid/signerd.xml](examples/unraid/signerd.xml) (Community Applications / user template).
 -   **systemd**: [examples/systemd/signerd.service.example](examples/systemd/signerd.service.example).
 -   **launchd** (macOS): [examples/launchd/signerd.plist.example](examples/launchd/signerd.plist.example).
+-   **Windows**: [docs/windows.md](docs/windows.md) +
+    [examples/windows/](examples/windows/).
 -   **nginx**: [examples/nginx/sign.conf](examples/nginx/sign.conf).
 
 A `v1.0.0` release plants the floating `v1` tag the Action tracks.

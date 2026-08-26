@@ -1,5 +1,7 @@
 # Release pipeline. Push a full semver tag (v1.2.3) and this workflow:
-#   1. Builds and publishes binaries with GoReleaser.
+#   1. Builds and publishes binaries with GoReleaser Pro (Authenticode on
+#      Windows PE when CODESIGN_URL is set; Apple sign+notarize on darwin
+#      when MACOS_SIGN_P12 is set).
 #   2. Publishes the signerd Docker image to GHCR with the same tag.
 #   3. Force-moves the floating tags (v1, v1.2) that GitHub Actions
 #      consumers track with `uses: golift/codesign@v1`, but only when this
@@ -44,13 +46,58 @@ jobs:
         with:
           go-version-file: go.mod
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: install-codesign
+        env:
+          GOBIN: ${{ runner.temp }}/codesign-bin
+        run: |
+          set -euo pipefail
+          mkdir -p "${GOBIN}"
+          go install ./cmd/codesign
+          echo "${GOBIN}" >> "${GITHUB_PATH}"
+          echo "CODESIGN_BIN=${GOBIN}/codesign" >> "${GITHUB_ENV}"
+      # GoReleaser Pro enables notarize when MACOS_SIGN_P12 is set, then
+      # skips the notary submit if issuer/key/id are empty and still exits 0.
+      # Fail here so a half-configured org cannot publish signed-only darwin.
+      - name: require-apple-sign-secrets
+        env:
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MACOS_SIGN_P12}" ]; then
+            echo "MACOS_SIGN_P12 unset; Darwin archives will not be signed or notarized"
+            exit 0
+          fi
+          missing=
+          [ -n "${MACOS_SIGN_PASSWORD}" ] || missing="${missing} MACOS_SIGN_PASSWORD"
+          [ -n "${MACOS_NOTARY_KEY}" ] || missing="${missing} MACOS_NOTARY_KEY"
+          [ -n "${MACOS_NOTARY_KEY_ID}" ] || missing="${missing} MACOS_NOTARY_KEY_ID"
+          [ -n "${MACOS_NOTARY_ISSUER_ID}" ] || missing="${missing} MACOS_NOTARY_ISSUER_ID"
+          if [ -n "${missing}" ]; then
+            echo "MACOS_SIGN_P12 is set but Apple sign+notarize secrets are incomplete:${missing}" >&2
+            exit 1
+          fi
       - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
-          distribution: goreleaser
+          distribution: goreleaser-pro
           version: '~> v2'
-          args: release --clean
+          args: release --clean --timeout 60m
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GORELEASER_KEY: ${{ secrets.GORELEASER_PRO_KEY }}
+          CODESIGN_URL: ${{ secrets.CODESIGN_URL }}
+          CODESIGN_CLIENT_CERT: ${{ secrets.CODESIGN_CLIENT_CERT }}
+          CODESIGN_CLIENT_KEY: ${{ secrets.CODESIGN_CLIENT_KEY }}
+          CODESIGN_NAME: Go Lift Code Sign
+          CODESIGN_WEBSITE: https://github.com/golift/codesign
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
   docker:
     runs-on: ubuntu-latest
     permissions:

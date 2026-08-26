@@ -1,0 +1,4 @@
+@echo off
+REM Task Scheduler history does not capture stdout/stderr. Append both to a
+REM log next to the config and ACL it like pin.
+"C:\Program Files\signerd\signerd.exe" --config "C:\ProgramData\signerd\signerd.toml" >> "C:\ProgramData\signerd\signerd.log" 2>&1
