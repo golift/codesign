@@ -55,6 +55,31 @@ jobs:
           go install ./cmd/codesign
           echo "${GOBIN}" >> "${GITHUB_PATH}"
           echo "CODESIGN_BIN=${GOBIN}/codesign" >> "${GITHUB_ENV}"
+      # GoReleaser Pro enables notarize when MACOS_SIGN_P12 is set, then
+      # skips the notary submit if issuer/key/id are empty and still exits 0.
+      # Fail here so a half-configured org cannot publish signed-only darwin.
+      - name: require-apple-sign-secrets
+        env:
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MACOS_SIGN_P12}" ]; then
+            echo "MACOS_SIGN_P12 unset; Darwin archives will not be signed or notarized"
+            exit 0
+          fi
+          missing=
+          [ -n "${MACOS_SIGN_PASSWORD}" ] || missing="${missing} MACOS_SIGN_PASSWORD"
+          [ -n "${MACOS_NOTARY_KEY}" ] || missing="${missing} MACOS_NOTARY_KEY"
+          [ -n "${MACOS_NOTARY_KEY_ID}" ] || missing="${missing} MACOS_NOTARY_KEY_ID"
+          [ -n "${MACOS_NOTARY_ISSUER_ID}" ] || missing="${missing} MACOS_NOTARY_ISSUER_ID"
+          if [ -n "${missing}" ]; then
+            echo "MACOS_SIGN_P12 is set but Apple sign+notarize secrets are incomplete:${missing}" >&2
+            exit 1
+          fi
       - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           distribution: goreleaser-pro

@@ -4,10 +4,13 @@
   YubiKey on the box. Import as a logon task for the user who can see the
   token (InteractiveToken), not a Session-0 Windows Service.
 
-  Edit Command and Arguments, then:
+  Copy examples/windows/signerd.cmd.example to
+  C:\ProgramData\signerd\signerd.cmd (edit the exe path), then:
 
     schtasks /create /tn signerd /xml C:\ProgramData\signerd\signerd.task.xml
 
+  The wrapper appends stdout/stderr to C:\ProgramData\signerd\signerd.log.
+  Task Scheduler history does not capture them.
   Config: C:\ProgramData\signerd\signerd.toml
   See docs/windows.md.
 -->
@@ -46,8 +49,7 @@
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>C:\Program Files\signerd\signerd.exe</Command>
-      <Arguments>--config C:\ProgramData\signerd\signerd.toml</Arguments>
+      <Command>C:\ProgramData\signerd\signerd.cmd</Command>
     </Exec>
   </Actions>
 </Task>

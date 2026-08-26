@@ -23,7 +23,9 @@ sign.example.com {
 	tls {
 		client_auth {
 			mode require_and_verify
-			trusted_ca_cert_file C:\ProgramData\signerd\client-ca.crt
+			trust_pool file {
+				pem_file C:\ProgramData\signerd\client-ca.crt
+			}
 		}
 	}
 

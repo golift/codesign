@@ -13,6 +13,8 @@ stacks is unreliable. Run the native exe in a **logged-on user session**.
 | Path | What |
 | --- | --- |
 | `%ProgramData%\signerd\signerd.toml` | Daemon config (system default after the user config dir) |
+| `%ProgramData%\signerd\signerd.cmd` | Logon-task wrapper; appends stdout/stderr to `signerd.log` |
+| `%ProgramData%\signerd\signerd.log` | Daemon log. ACL it to the signing user. |
 | `%ProgramData%\signerd\chain.pem` | Full Authenticode chain (leaf + intermediates) |
 | `%ProgramData%\signerd\pin` | PIV user PIN, one line. ACL it to the signing user. Never the PUK. |
 | `%ProgramData%\signerd\client-ca.crt` | House/client CA the reverse proxy trusts (Caddy/nginx) |
@@ -60,8 +62,9 @@ on this box proxies to loopback. Non-loopback peers still need GitHub OIDC.
 Session 0 often cannot see the YubiKey over PC/SC. Same reason the macOS
 example is a LaunchAgent, not a LaunchDaemon.
 
-Import [examples/windows/signerd.task.xml](../examples/windows/signerd.task.xml)
-(edit the `Command` / `--config` paths first):
+Copy [examples/windows/signerd.cmd.example](../examples/windows/signerd.cmd.example)
+to `%ProgramData%\signerd\signerd.cmd` (edit the exe path). Import
+[examples/windows/signerd.task.xml](../examples/windows/signerd.task.xml):
 
 ```powershell
 schtasks /create /tn signerd /xml C:\ProgramData\signerd\signerd.task.xml
@@ -71,7 +74,11 @@ The task uses **InteractiveToken** (run only when the user is logged on) and
 restarts on failure. Autologon on a dedicated signing box is fine; a Service
 Control Manager service running as LocalSystem is not.
 
-Logs: Task Scheduler history, or redirect later if you wrap the exe.
+Task Scheduler history is start/stop only; it does **not** capture this
+`Exec` action's stdout/stderr. `signerd` writes startup failures and signing
+audit events to stderr, so the example runs a wrapper that appends both
+streams to `%ProgramData%\signerd\signerd.log`. ACL that log to the signing
+user the same way as `pin`.
 
 ## Reverse proxy (mTLS)
 
