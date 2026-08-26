@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -53,6 +54,9 @@ type Config struct {
 	KeyID string `toml:"key_id" xml:"key_id"`
 	// Alias selects the certificate for the jsign backend.
 	Alias string `toml:"alias" xml:"alias"`
+	// StoreType is the jsign --storetype. Empty defaults to YUBIKEY.
+	// Windows hosts that skip libykcs11 should set PIV.
+	StoreType string `toml:"store_type" xml:"store_type"`
 	// PIN is the token user PIN. Prefer SIGNERD_PIN or pin_file over
 	// writing it in the config file. Never the PUK.
 	PIN string `toml:"pin" xml:"pin"`
@@ -103,7 +107,8 @@ func main() {
 }
 
 func run() error {
-	configFlag := flag.String("config", "", "path to signerd.toml (default: user config dir, then /etc/signerd)")
+	configFlag := flag.String("config", "",
+		"path to signerd.toml (default: user config dir, then "+systemConfigHint()+")")
 	versionFlag := flag.Bool("version", false, "print the version and exit")
 
 	flag.Parse()
@@ -206,18 +211,51 @@ func loadConfig(path string) (*Config, error) {
 	return config, nil
 }
 
+const (
+	configFileName = "signerd.toml"
+	unixSystemDir  = "/etc/signerd"
+)
+
+// systemConfigHint is the second half of -config's default-path help.
+func systemConfigHint() string {
+	if runtime.GOOS == "windows" {
+		return `ProgramData\signerd`
+	}
+
+	return unixSystemDir
+}
+
 // findConfigFile returns the first config file that exists in the default
 // locations, or "" when none do (environment-only configuration).
 func findConfigFile() string {
-	candidates := []string{"/etc/signerd/signerd.toml"}
+	return firstExistingConfig(defaultConfigCandidates())
+}
+
+// defaultConfigCandidates is user config first, then the system path:
+// %ProgramData%\signerd on Windows, /etc/signerd elsewhere.
+func defaultConfigCandidates() []string {
+	var candidates []string
 
 	dir, err := os.UserConfigDir()
 	if err == nil {
-		candidates = append([]string{filepath.Join(dir, "signerd", "signerd.toml")}, candidates...)
+		candidates = append(candidates, filepath.Join(dir, "signerd", configFileName))
 	}
 
+	if runtime.GOOS == "windows" {
+		programData := os.Getenv("ProgramData")
+		if programData != "" {
+			candidates = append(candidates, filepath.Join(programData, "signerd", configFileName))
+		}
+
+		return candidates
+	}
+
+	return append(candidates, filepath.Join(unixSystemDir, configFileName))
+}
+
+func firstExistingConfig(candidates []string) string {
 	for _, candidate := range candidates {
-		_, err = os.Stat(candidate)
+		_, err := os.Stat(candidate)
 		// Anything but not-exist counts as a hit (permission problems, for
 		// example) so loadConfig surfaces a clear error instead of silently
 		// running on environment-only configuration.
@@ -366,6 +404,7 @@ func buildSigner(config *Config) (signer.Signer, error) { //nolint:ireturn // Pi
 	case "jsign":
 		return backends.NewJsign(&backends.JsignConfig{
 			Command:       config.Command,
+			StoreType:     config.StoreType,
 			Alias:         config.Alias,
 			CertFile:      config.CertFile,
 			PIN:           config.PIN,
