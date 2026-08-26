@@ -17,12 +17,12 @@
 
 sign.example.com {
 	request_body {
-		max_size 100MB
+		max_size 100MiB
 	}
 
 	tls {
 		client_auth {
-			mode require
+			mode require_and_verify
 			trusted_ca_cert_file C:\ProgramData\signerd\client-ca.crt
 		}
 	}
