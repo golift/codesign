@@ -5,7 +5,7 @@ go 1.27.0
 require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/stretchr/testify v1.12.1
-	golift.io/cnfg v0.2.5
+	golift.io/cnfg v0.4.0
 	golift.io/cnfgfile v0.0.0-20240713024420-a5436d84eb48
 	golift.io/version v0.0.2
 )
