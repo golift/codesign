@@ -4,7 +4,7 @@
 # same token (exclusive PC/SC access; pick one owner). Pass the YubiKey CCID
 # interface in with --device; see docs/docker-usb.md for finding it safely.
 
-FROM golang:1.27.0@sha256:4013ae0f9e7994f8535c58c811f8f863fbed38b72e0d51e6592156f758d66146 AS build
+FROM golang:1.27.2@sha256:820153096fda4de6ac1b7194d12e416b7dd8f4e9a33d17e0345b111b945162d8 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
